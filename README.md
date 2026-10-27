@@ -199,8 +199,9 @@ contains vendor files.
 > [!IMPORTANT]
 > **Install gives ONE TRIAL BOOT only.** The mod runs on the next boot and is **off again after
 > the one after**. If everything works on the trial boot, go back to the menu and press
-> **ENABLE PERMANENTLY** — otherwise the mod is simply gone after the next reboot. Menu →
-> **Status** always shows which state you are in.
+> **ENABLE PERMANENTLY** — otherwise the mod is simply gone after the next reboot. The trial boot
+> is there so you can check that everything works and nothing breaks; if anything is wrong, just
+> reboot and the unit is stock again. Menu → **Status** always shows which state you are in.
 
 > [!TIP]
 > Keep the card's `mst2-cluster-nav-backup/` folder — the copies of the three stock files.
