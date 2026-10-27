@@ -13,3 +13,4 @@ mkdir -p "$OUT"
 "$JDK/bin/java" -Dfile.encoding=UTF-8 -cp "$OUT:$MIBHMI" mst2.clusternav.LanesCheck \
     "$HERE/../native/build/check/lanes-message.txt"
 "$JDK/bin/java" -Dfile.encoding=UTF-8 -cp "$OUT:$MIBHMI" mst2.clusternav.NowPlayingCheck
+"$JDK/bin/java" -Dfile.encoding=UTF-8 -cp "$OUT:$MIBHMI" mst2.clusternav.CoverCheck

@@ -38,6 +38,7 @@ import de.vw.mib.bap.mqbab2.generated.audiosd.serializer.CurrentStationInfo_Stat
  * service (property 2910018, which it registers for in init) once its BAP stage is up; that
  * service is real only with App-Connect coded (APIFactory.getSmartphoneIntegrationService,
  * feature flag 452), else the stock dummy stands there and the cluster keeps the stock text.
+ * The track's cover picture ("art=") goes to ClusterCover.
  */
 final class NowPlaying implements BAPStageContext, PropertyListener {
     private static final String CARPLAY = "Apple CarPlay";
@@ -65,7 +66,7 @@ final class NowPlaying implements BAPStageContext, PropertyListener {
 
     /** A "media=..." datagram from SAL (PhoneLink thread). */
     static void received(String text) {
-        String t = null, ar = "", al = "", src = CARPLAY;
+        String t = null, ar = "", al = "", src = CARPLAY, art = null;
         int start = 0;
         while (start < text.length()) {
             int end = text.indexOf('\n', start);
@@ -82,6 +83,8 @@ final class NowPlaying implements BAPStageContext, PropertyListener {
                 al = line.substring(6);
             } else if (line.equals("src=aa")) {
                 src = ANDROID_AUTO;
+            } else if (line.startsWith("art=/")) {
+                art = line.substring(4);
             }
         }
         if (t == null || t.length() == 0) {
@@ -95,6 +98,8 @@ final class NowPlaying implements BAPStageContext, PropertyListener {
             track = now;
             refresh();
         }
+        /* After the station info's refresh: the cover finds the AudioSD functions through it. */
+        ClusterCover.set(src == ANDROID_AUTO ? ClusterCover.ANDROID_AUTO : ClusterCover.CARPLAY, art);
     }
 
     private static boolean same(String[] a, String[] b) {
@@ -114,6 +119,7 @@ final class NowPlaying implements BAPStageContext, PropertyListener {
     }
 
     static void clear() {
+        ClusterCover.set(0, null);
         if (track != null) {
             track = null;
             refresh();
@@ -123,12 +129,14 @@ final class NowPlaying implements BAPStageContext, PropertyListener {
     /** Bundle start: refreshes may wrap the station-info contexts again (after an earlier stop). */
     static void start() {
         stopped = false;
+        ClusterCover.start();
     }
 
     /** Puts the stock contexts back (bundle stop); no refresh after this wraps them again. */
     static void uninstall() {
         stopped = true;
         track = null;
+        ClusterCover.uninstall();
         ClusterCarPlay.safeEnqueue(new Runnable() {
             public void run() {
                 for (int i = 0; i < contexts.size(); i++) {
@@ -145,6 +153,11 @@ final class NowPlaying implements BAPStageContext, PropertyListener {
                 contexts.clear();
             }
         });
+    }
+
+    /** The stock BAP AudioSD context (its data pool) of a wrapped station-info function; ASL thread. */
+    static BAPStageContext audioContext() {
+        return contexts.isEmpty() ? null : ((NowPlaying)contexts.get(0)).stock;
     }
 
     /* On the ASL thread, where the stock function runs: install if needed, then resend. */

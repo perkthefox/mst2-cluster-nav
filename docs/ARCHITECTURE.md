@@ -457,6 +457,38 @@ type 72 — only over the text of the same source, and gives the stock text back
 after 3 s of silence or when switched off. It needs App-Connect coded (feature 452): without it
 the HMI has no smartphone-integration service and the cluster keeps its stock text.
 
+### Cover art
+
+The phone's cover reaches SAL as a file. CarPlay: `[nowplaying]` also asks for
+`ArtworkFileTransferIdentifier`; the stock driver receives the picture itself over its iAP2
+file-transfer session and, when it is complete, publishes `MediaItemArtworkFileTransferIdentifier`
+and `MediaItemArtworkSize`. SAL then reads the bytes with `iap2_nowplay_getartwork` over a
+short-lived client of its own (the driver serves it under the mutex its file-transfer path holds;
+no stock process calls it), checks the announced size and drops a short read. A cover counts for
+the current track only if its pair changed after the track's title did (the PPS object keeps old
+lines). A failed read is retried every 5 s while the pair is the current track's, up to three
+failed reads, and a driver that does not have the image yet is asked until it has it. This adds
+no message ID. Android Auto: the metadata's album art (field 4) is written during
+the callback, only when it changed. Either way the picture (JPEG or PNG, at most 1 MiB) is written
+as a temporary file and renamed to `/dev/shmem/mst2-cluster-nav-cover-<seq>.<jpg|png>` (seq grows
+with each image; the file two images back is deleted, and all cover files go when SAL starts
+and when a session ends), and `art=<path>` joins the `media=1` datagram.
+
+The stock picture server sends the cluster covers over MOST (`DSIKombiPictureServer.responseCoverArt`
+→ `fpkimagetransfer` → `picserver`, which decodes, scales and re-encodes the file), but only for
+local sources: `CoverArt` serves source types 6–8, 10, 11, 15, 16 and 18–22, the phones' 37/39 map
+to 255 and get "no cover", and the cluster itself draws covers only for local media. So while a
+phone track with a picture plays and the stock BAP AudioSD ActiveSource names that phone,
+`ClusterCover` hands the data pool a copy of ActiveSource (function 16) saying USB (19, list
+reference 0, list state 3, media browser available) and of CurrentStationHandle (22) with handle 1;
+the functions and every other stage keep the stock values. `CoverArt`'s media service is wrapped
+to name the picture as the valid cover, and `updateMediaCoverArt` is called for every new picture.
+Nothing is substituted until that wrapper is in place (the picture server may start later); a
+missing piece is retried every 2 s while a picture waits.
+The cluster then shows a USB source icon with the phone's cover and the phone's track text. With
+no picture, on `media=0`, after 3 s of silence, with the kill switch or when the bundle stops, the
+stock values are sent again.
+
 ## Android Auto (A)
 
 The receiver library `libext.google.gal.receiver.so` (AAP 1.3) has a navigation status and a
@@ -470,8 +502,18 @@ the library's vtable whose channel callbacks start the endpoint and end its data
   event, turn number, turn angle) and distance; `common/aa.c` turns them into the same snapshot
   as CarPlay's. The distance handler is interposed too, for our endpoint only, because the
   library skips the callback when the phone leaves out the unit. AA sends no time or distance to
-  the destination; those stay invalid. Roundabouts are drawn for right-hand traffic: nothing in
-  the library says which way a roundabout turns.
+  the destination; those stay invalid. Roundabouts: `turn_side` is read as the traffic side
+  (LEFT → left-hand, RIGHT → right-hand, otherwise unknown: `lht=-1`) and `turn_angle` as the
+  degrees travelled from the entry to the exit (1..360, 180 = straight across); an angle of 0 or
+  none — Yandex Maps sends only the exit number — is taken from the exit number (90 per exit, at
+  most 315). SAL sends `around` and `exit`, and the exit angle (right-hand 180 − around,
+  left-hand around − 180) when the side is known. With an unknown side the HMI takes it from the
+  built-in navigation's country (`CountryInfo.rightHandTraffic` of the car's position), else the
+  coded steering-wheel side (right-hand drive → left-hand traffic), else right-hand traffic. This
+  follows the public protocol description and a public receiver for this firmware; the car
+  confirms it.
+- **Calls** need nothing from the mod: during Android Auto the phone stays on Bluetooth, and the
+  cluster's phone view takes caller and state from the stock Bluetooth telephone path.
 - **Now playing**: above.
 - **Cluster video** (not with "Native arrows only"): a second video sink and an input stub are
   appended to the discovery response as raw protobuf fields; the phone's 1280×720 frames are
@@ -493,13 +535,29 @@ UDP datagrams on 127.0.0.1:39750, UTF-8 text, one `key=value` per line:
 
 | Datagram | Sender | Meaning |
 |---|---|---|
-| `active=1` + `type`, `angle`, `lht`, `roads`, `dist`, `step`, `street`, `rtt`, `dest`, `lanes`, `laneN` | SAL (CarPlay route reader, AA arrows) | one complete guidance snapshot, about once a second; `-1` = unknown (AA sends no `rtt`/`dest`) |
+| `active=1` + `type`, `angle`, `lht`, `roads`, `dist`, `step`, `street`, `rtt`, `dest`, `lanes`, `laneN`, `around`, `exit` | SAL (CarPlay route reader, AA arrows) | one complete guidance snapshot, about once a second; `-1` = unknown (AA sends no `rtt`/`dest`; `lht=-1`: the HMI decides the traffic side) |
 | `active=0` | SAL | guidance ended (sent once) |
 | `video=1` / `video=0` | SAL (CarPlay stream, AA video) | the phone's cluster video is alive (about once a second) / ended |
-| `media=1` + `title`, `artist`, `album`[, `src=aa`] | SAL | the playing track, once a second; no `src` = CarPlay |
+| `media=1` + `title`, `artist`, `album`[, `art`][, `src=aa`] | SAL | the playing track, once a second; `art` = path of its cover file, no `src` = CarPlay |
 | `media=0` | SAL | nothing playing |
 
 A datagram that is none of these (no `active=`, `video=` or `media=` line) is ignored. Silence
 ends guidance after 5 s and video after 3 s, so a dead process cannot leave the cluster to the
 phone.
 
+## Calls and location (stock)
+
+CarPlay calls: during CarPlay the unit switches the iPhone's Bluetooth hands-free off and takes
+calls over CarPlay. The stock driver publishes call state, caller name and number in
+`/pps/services/multimedia/iap2/communications`, SAL reads it, and the BAP telephone function of
+the cluster switches to its CarPlay binding (`TelephoneBindingFactoryCarPlay`) while the
+smartphone integration's connection type is 2 — so the cluster's phone view shows CarPlay calls
+without the mod (call duration is not sent for CarPlay). The mod only logs the path on change,
+polled once a second with read-only getters and no listener registered (the stock listener lists
+are plain lists iterated without a lock): the connection type, and CarPlay call states at the ASL
+CarPlay services and at the BAP CarPlay service (state and direction, never a name or number).
+
+Location for CarPlay: SAL sends GPGGA, GPRMC and PASCD, built from the positioning service's fixes.
+The driver could also take GPGSV, GPHDT, PAGCD and PAACD, but SAL has no source for satellites, a
+heading sensor, the gyro or the accelerometer (only the positioning service reads those), so
+nothing is added.

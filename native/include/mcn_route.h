@@ -12,6 +12,10 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <dirent.h>
+#define MCN_DIRENT_NAME(e) (((struct dirent *)(e))->d_name)
 #else
 #include "mcn_qnx.h"
 #endif
@@ -126,9 +130,10 @@ void mcn_aa_distance(struct mcn_aa *a, int meters);
 int mcn_aa_text(const struct mcn_aa *a, char *out, unsigned size);
 /* len bytes of src as one line in dst[size], cut on a UTF-8 boundary. */
 void mcn_aa_copy(char *dst, unsigned size, const char *src, unsigned len);
-/* Android Auto now playing: "media=1" .. "src=aa"; 0 without a title, -1 if out is too small. */
-int mcn_aa_media_text(const char *title, const char *artist, const char *album, char *out,
-                      unsigned size);
+/* Android Auto now playing: "media=1" .. ["art=" art] "src=aa"; 0 without a title, -1 if out is
+ * too small. art: the cover file, NULL or "" for none. */
+int mcn_aa_media_text(const char *title, const char *artist, const char *album, const char *art,
+                      char *out, unsigned size);
 /* SAL (sal/gal.c): resends live Android Auto guidance about once a second. */
 void mcn_gal_tick(unsigned now);
 
@@ -138,6 +143,46 @@ void mcn_gal_tick(unsigned now);
 /* "media=1\ntitle=..\nartist=..\nalbum=..\n" from the PPS object; 0 without a title, -1 if
  * out is too small. */
 int mcn_media_text(const char *pps, unsigned len, char *out, unsigned size);
+
+/*
+ * Cover art for the HMI: a JPEG or PNG written atomically (temporary file, then rename) as
+ * <dir>/mst2-cluster-nav-cover-<seq>.<jpg|png>, seq growing with each image (the first one is
+ * now_ms, so a restarted SAL never reuses a path); the file two images back is deleted.
+ */
+#define MCN_COVER_DIR  "/dev/shmem"
+#define MCN_COVER_MAX  (1024u * 1024u)
+#define MCN_COVER_PATH 96
+/* 0 and the path in out, -1 if data is no JPEG/PNG, bigger than MCN_COVER_MAX or not written. */
+int mcn_cover_save(const char *dir, const uint8_t *data, unsigned n, unsigned now_ms, char *out,
+                   unsigned size);
+/* Removes every cover file in dir (SAL start, end of a session); nothing else is touched. */
+void mcn_cover_clean(const char *dir);
+
+/*
+ * CarPlay artwork in the driver's PPS object (MediaItemArtworkFileTransferIdentifier and
+ * MediaItemArtworkSize, written when a transfer completes). The object only ever gains lines, so
+ * a pair counts for the current track only if it changed after the track's title appeared.
+ */
+struct mcn_art {
+    unsigned prev_id, prev_size; /* the pair at the last poll */
+    unsigned base_id, base_size; /* the pair before the current title appeared */
+    unsigned file_id, file_size; /* the pair fetched last (path "" if that failed) */
+    unsigned tries, tried_ms;    /* reads of that pair that failed, and when it was last asked */
+    char title[MCN_MEDIA_TEXT];
+    char path[MCN_COVER_PATH];
+};
+/* A failed fetch of the current pair is asked again every MCN_ART_RETRY_MS while it stays
+ * current, until MCN_ART_TRIES reads of it failed. */
+#define MCN_ART_RETRY_MS 5000
+#define MCN_ART_TRIES    3
+void mcn_art_reset(struct mcn_art *s);
+/* One poll of the PPS object: the size to fetch now (the current track's artwork), else 0. */
+unsigned mcn_art_poll(struct mcn_art *s, const char *pps, unsigned len, unsigned now_ms);
+/* The fetch asked for by mcn_art_poll is done: the written file, or NULL if it failed; tried:
+ * the driver had the image and the read failed (counts against MCN_ART_TRIES). */
+void mcn_art_fetched(struct mcn_art *s, const char *path, int tried);
+/* The current track's cover file, "" for none. */
+const char *mcn_art_current(const struct mcn_art *s);
 
 /* iap2_ctrl_msg_table row (indexed by the message ID's high byte) and its msg_info
  * entries (indexed by the low byte); 12 bytes each on the 32-bit QNX ABI (E23, E24). */

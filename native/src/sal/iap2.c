@@ -226,7 +226,7 @@ MCN_EXPORT int spawn(const char *path, int fd_count, const int *fd_map,
 }
 
 /* One read: a PPS object without ?wait gives its whole state per read() call. */
-static int read_media(char *buf, unsigned bufsize, char *out, unsigned size)
+static int read_media(char *buf, unsigned bufsize)
 {
     int fd = open(MCN_MEDIA_PPS, O_RDONLY);
     ssize_t n;
@@ -236,7 +236,62 @@ static int read_media(char *buf, unsigned bufsize, char *out, unsigned size)
     }
     n = read(fd, buf, bufsize);
     close(fd);
-    return n > 0 ? mcn_media_text(buf, (unsigned)n, out, size) : 0;
+    return n > 0 ? (int)n : 0;
+}
+
+/*
+ * The cover the driver holds after a completed transfer, read over a short-lived client like
+ * 0x5200 (SAL's client is never used). iap2_nowplay_getartwork (libiap2client 0x316c,
+ * ev_5cf1ff27) sends one message to the driver; nowplay_getartwork (driver 0x1e410,
+ * ev_4c3d7c4b) answers, under the driver's own mutex at dev+0x4c (the one the file-transfer
+ * receive path holds, link_handle_iap2pkt 0x1689c-0x168c4, ev_744b33c3): buf NULL or len 0 the
+ * announced size, else n = min(len, received - offset) bytes from a read offset that goes back
+ * to 0 only when it reaches the bytes received (0x1e468-0x1e4dc; errno 0x30 without
+ * nowplaying). No stock process calls it (SAL imports no such function, ev_4cf45f7b), so the
+ * read offset is ours alone. A short read before size means the driver already took the next
+ * image: its offset is back at 0 then.
+ * 1: written; 0: the read failed; -1: the driver has no image of this size (yet).
+ */
+static int read_cover(void *(*connect_client)(const char *, int), int (*disconnect_client)(void *),
+                      int (*get_artwork)(void *, void *, unsigned), const char *path, int flags,
+                      unsigned size, char *file, unsigned file_size)
+{
+    uint8_t *buf = malloc(size);
+    void *client = buf ? connect_client(path, flags) : NULL;
+    unsigned got = 0, errors = 0;
+    int result = -1;
+
+    if (client) {
+        if (get_artwork(client, NULL, 0) == (int)size) {
+            result = 0;
+            /*
+             * A failed call (-1: the driver's malloc for the reply, nowplaying off) moves
+             * nothing, so it is asked again from the same offset; left mid-image, the offset
+             * would cut the next cover short. A short read means the offset wrapped to 0.
+             */
+            while (got < size && errors < 8) {
+                unsigned want = size - got < 65536u ? size - got : 65536u;
+                int n = get_artwork(client, buf + got, want);
+
+                if (n < 0) {
+                    errors++;
+                    usleep(20000);
+                    continue;
+                }
+                got += (unsigned)n;
+                if ((unsigned)n < want) {
+                    break;
+                }
+            }
+        }
+        disconnect_client(client);
+        if (result == 0 && got == size &&
+            mcn_cover_save(MCN_COVER_DIR, buf, size, mcn_now_ms(), file, file_size) == 0) {
+            result = 1;
+        }
+    }
+    free(buf);
+    return result;
 }
 
 static void *route_worker(void *unused)
@@ -248,20 +303,25 @@ static void *route_worker(void *unused)
     void *(*connect_client)(const char *, int) = NULL;
     int (*disconnect_client)(void *) = NULL;
     int (*raw_send)(void *, const void *, unsigned) = NULL;
+    int (*get_artwork)(void *, void *, unsigned) = NULL;
+    struct mcn_art *art = malloc(sizeof(*art));
     unsigned generation = ~0u, last_send = 0, attempts = 0, last_publish = 0, last_media = 0;
     int received = 0, was_active = 0, previous_up = 0, guidance_owned = 0, media_owned = 0;
     off_t offset = 0;
 
     (void)unused;
-    if (!r || !l || !out) {
+    if (!r || !l || !out || !art) {
         free(r);
         free(l);
         free(out);
+        free(art);
         mcn_log("route guidance: no memory, stock behaviour");
         return NULL;
     }
     mcn_route_reset(r);
     mcn_route_log_reset(l);
+    mcn_art_reset(art);
+    mcn_cover_clean(MCN_COVER_DIR); /* a previous SAL's covers */
     mcn_log("route guidance reader ready");
     for (;;) {
         char path[256], chunk[4096];
@@ -288,6 +348,7 @@ static void *route_worker(void *unused)
                 mcn_link_send("media=0");
                 media_owned = 0;
             }
+            mcn_art_reset(art);
             /*
              * Start at the end, after a spawn too: the new mm-ipod truncates the log only when
              * it parses -l (fopen "w+", ipod_main 0x103fd4), so reading from 0 here could replay
@@ -315,6 +376,8 @@ static void *route_worker(void *unused)
                 mcn_link_send("media=0");
                 media_owned = 0;
             }
+            mcn_art_reset(art);
+            mcn_cover_clean(MCN_COVER_DIR);
         }
         previous_up = up;
         was_active = active;
@@ -329,6 +392,7 @@ static void *route_worker(void *unused)
                     connect_client = dlsym(lib, "iap2_connect");
                     disconnect_client = dlsym(lib, "iap2_disconnect");
                     raw_send = dlsym(lib, "iap2_raw_msg_send");
+                    get_artwork = dlsym(lib, "iap2_nowplay_getartwork");
                 }
             }
             fd = open(LOG, O_RDONLY);
@@ -422,9 +486,33 @@ static void *route_worker(void *unused)
             }
             /* Now playing, once a second while CarPlay is up: PhoneLink times it out. */
             if (up && now - last_media >= 1000) {
-                int n = read_media(chunk, sizeof(chunk), out, MCN_RG_SNAPSHOT);
+                int raw = read_media(chunk, sizeof(chunk)), n = 0;
+                unsigned cover = raw > 0 ? mcn_art_poll(art, chunk, (unsigned)raw, now) : 0;
 
                 last_media = now;
+                if (cover) {
+                    char file[MCN_COVER_PATH];
+                    int got = path[0] && connect_client && disconnect_client && get_artwork
+                                  ? read_cover(connect_client, disconnect_client, get_artwork,
+                                               path, flags, cover, file, sizeof(file))
+                                  : -1;
+
+                    mcn_art_fetched(art, got > 0 ? file : NULL, got == 0);
+                    if (got == 0) {
+                        mcn_log("now playing: cover not read");
+                    }
+                }
+                if (raw > 0) {
+                    n = mcn_media_text(chunk, (unsigned)raw, out, MCN_RG_SNAPSHOT);
+                }
+                /* "art=" with the current track's cover, if it has one. */
+                if (n > 0 && mcn_art_current(art)[0]) {
+                    int k = snprintf(out + n, MCN_RG_SNAPSHOT - (unsigned)n, "art=%s\n",
+                                     mcn_art_current(art));
+
+                    n = k > 0 && (unsigned)(n + k) < MCN_RG_SNAPSHOT ? n + k : n;
+                    out[n] = 0;
+                }
                 if (n > 0) {
                     if (!media_owned) {
                         mcn_log("now playing: first track from the phone");

@@ -13,6 +13,11 @@ package mst2.clusternav;
  * Angles: iAP2 degrees, negative = left. BAP direction: 0..255 counter-clockwise, 0 ahead,
  * 64 left, 128 back, 192 right (verified on the cluster firmware in mQbEMU). An angle of +-1000 means
  * "unknown"; NO_ANGLE means the field was absent.
+ *
+ * Android Auto describes a roundabout exit by "around": degrees travelled round the roundabout
+ * from the entry to the exit, 1..360, 180 = straight across. Traffic goes round counter-clockwise
+ * under right-hand traffic (first exit on the right at about 90) and clockwise under left-hand
+ * traffic, so the exit angle is 180 - around or around - 180 (aroundToAngle).
  */
 final class Maneuvers {
     static final int NO_ANGLE = Integer.MIN_VALUE;
@@ -40,6 +45,11 @@ final class Maneuvers {
 
     /** @return {main element, direction} */
     static int[] map(int type, int angle, boolean leftHandTraffic) {
+        return map(type, angle, leftHandTraffic, 0);
+    }
+
+    /** @param around Android Auto's roundabout travel, 1..360, else unknown */
+    static int[] map(int type, int angle, boolean leftHandTraffic, int around) {
         boolean known = angle != NO_ANGLE && angle != 1000 && angle != -1000;
         int round = leftHandTraffic ? ROUNDABOUT_LEFT_TRAFFIC : ROUNDABOUT_RIGHT_TRAFFIC;
         switch (type) {
@@ -57,6 +67,10 @@ final class Maneuvers {
             return pair(UTURN, left ? LEFT : RIGHT);
         }
         case 6:
+            /* Entering a roundabout; Android Auto may say how far round without an exit number. */
+            if (around >= 1 && around <= 360) {
+                return pair(round, sixteenths(aroundToAngle(around, leftHandTraffic)));
+            }
             return pair(TURN, leftHandTraffic ? LEFT : RIGHT);
         case 7:
             return leftHandTraffic ? pair(EXIT_ROUNDABOUT_LEFT_TRAFFIC, LEFT)
@@ -96,7 +110,11 @@ final class Maneuvers {
                 /* Roundabout exit 1..19: the exit's angle in 22.5 degree steps; without an
                  * angle (some apps send none or 0) the exit number gives the usual four-arm
                  * picture: 1st right, 2nd ahead, 3rd left, later ones back (mirrored for
-                 * left-hand traffic). */
+                 * left-hand traffic). Android Auto's travel round it says the exit's angle even
+                 * straight across, where an angle of 0 would read as none. */
+                if (around >= 1 && around <= 360) {
+                    return pair(round, sixteenths(aroundToAngle(around, leftHandTraffic)));
+                }
                 if (known && angle != 0) {
                     return pair(round, sixteenths(angle));
                 }
@@ -104,6 +122,11 @@ final class Maneuvers {
             }
             return pair(NO_INFO, AHEAD);
         }
+    }
+
+    /** Exit angle (iAP2 degrees, negative = left) of a roundabout exit "around" degrees round. */
+    static int aroundToAngle(int around, boolean leftHandTraffic) {
+        return leftHandTraffic ? around - 180 : 180 - around;
     }
 
     /** Side streets of the junction: every road angle except the exit and unknown ones. */

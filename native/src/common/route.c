@@ -680,8 +680,11 @@ static int config_ids(char *out, unsigned size, unsigned *used,
 /*
  * Now playing: with [nowplaying] enable=yes the stock driver announces 0x5000 in its
  * identification (feature bit 0x80, MessagesSent builder; mQbEMU notes ev_e1dd2d9c), asks the
- * phone for these attributes and publishes them to PPS for media.c. No artwork yet: it comes
- * by file transfer over the same iAP2 link.
+ * phone for these attributes and publishes them to PPS for media.c. The cfg names map to the
+ * driver's MediaItem* attributes by suffix (nowplay_getconfig 0x20578: stricmp against the name
+ * plus an offset, ev_72d56ba1); ArtworkFileTransferIdentifier makes the driver take the cover
+ * over its file-transfer session itself (media.c). It adds no message ID: the file session is
+ * a link session, not a control message (link_setup, ev_06f4e0c8).
  * ID budget (P0480T): ident_info_sendmsgs/recvmsgs (0xe270/0xdae8) list the stock IDs of each
  * enabled feature, then the [ident] ones, in 0x80 bytes, and drop cfg IDs past it. With every
  * feature bit on the stock lists hold 45 sent and 24 received IDs (NowPlaying 0x5000/02/03 and
@@ -691,7 +694,8 @@ static int config_ids(char *out, unsigned size, unsigned *used,
  */
 static const char *const np_keys[] = {"enable", "metadata", "playback"};
 static const char *const np_lines[] = {
-    "enable=yes\n", "metadata=Title,Artist,AlbumTitle\n", "playback=Status\n"};
+    "enable=yes\n", "metadata=Title,Artist,AlbumTitle,ArtworkFileTransferIdentifier\n",
+    "playback=Status\n"};
 
 /* Index in np_keys of the "key =" line at p, or -1. */
 static int np_key(const char *p, unsigned n)

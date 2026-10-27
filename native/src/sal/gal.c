@@ -54,8 +54,8 @@
 
 /* common/aa.c */
 void mcn_aa_copy(char *dst, unsigned size, const char *src, unsigned len);
-int mcn_aa_media_text(const char *title, const char *artist, const char *album, char *out,
-                      unsigned size);
+int mcn_aa_media_text(const char *title, const char *artist, const char *album, const char *art,
+                      char *out, unsigned size);
 /* sal/gal_video.c: the Android Auto session of this router ended. */
 void mcn_gal_video_end(void *router);
 
@@ -94,6 +94,9 @@ static int nav_busy, media_busy;
 static int media_state, media_told;
 static unsigned media_sent;
 static char title[MCN_MEDIA_TEXT], artist[MCN_MEDIA_TEXT], album[MCN_MEDIA_TEXT];
+static char art[MCN_COVER_PATH];
+/* The last cover written (only the receiver thread's cb_media_meta touches these). */
+static unsigned art_hash, art_len;
 
 static void lock(void)
 {
@@ -131,10 +134,10 @@ static void publish(void)
  * as for CarPlay: common/media.c). */
 static void media_publish(void)
 {
-    char out[4 * MCN_MEDIA_TEXT];
+    char out[4 * MCN_MEDIA_TEXT + MCN_COVER_PATH];
 
     if (media_state == MEDIA_PLAYING && mcn_active() &&
-        mcn_aa_media_text(title, artist, album, out, sizeof(out)) > 0) {
+        mcn_aa_media_text(title, artist, album, art, out, sizeof(out)) > 0) {
         mcn_link_send(out);
         media_told = 1;
     } else if (media_told) {
@@ -157,7 +160,11 @@ static void nav_end(void)
 static void media_end(void)
 {
     media_state = 0;
-    title[0] = artist[0] = album[0] = 0;
+    if (art[0]) {
+        mcn_cover_clean(MCN_COVER_DIR);
+    }
+    title[0] = artist[0] = album[0] = art[0] = 0;
+    art_len = art_hash = 0; /* the next session writes its cover again */
     media_publish();
     hold(&media_busy, 0);
 }
@@ -184,12 +191,18 @@ static void none(void *self)
     (void)self;
 }
 
-/* An old libstdc++ COW std::string: a pointer to the characters, the length 12 bytes before. */
-static unsigned cow_len(const char *s)
+/* An old libstdc++ COW std::string: a pointer to the characters, the length 12 bytes before;
+ * 0 when longer than max. */
+static unsigned cow_size(const char *s, unsigned max)
 {
     int n = s ? ((const int *)s)[-3] : 0;
 
-    return n > 0 && n <= 4096 ? (unsigned)n : 0;
+    return n > 0 && (unsigned)n <= max ? (unsigned)n : 0;
+}
+
+static unsigned cow_len(const char *s)
+{
+    return cow_size(s, 4096);
 }
 
 static void cb_status(void *self, int status)
@@ -273,15 +286,41 @@ static void cb_media_status(void *self, const int *status)
     unlock();
 }
 
-/* MediaPlaybackMetadata as the handler passes it: {song, album, artist, art, playlist, ...}
- * (0x836f0, ev_1a993af7). */
+/*
+ * MediaPlaybackMetadata as the handler passes it: copies of fields 1, 3, 2, 4, 5 = {song, album,
+ * artist, album_art, playlist, ...} (handler 0x836f0 reads +0x10, +0x18, +0x14, +0x1c, +0x20;
+ * the serializer writes field 4 from +0x1c as bytes, 0xbaae8; ev_53a9d9f4, ev_a84bdbbc). The
+ * strings live only during the call, so the cover is written to its file here, outside the lock
+ * (up to MCN_COVER_MAX, a RAM file system), and only when it differs from the last one.
+ */
 static void cb_media_meta(void *self, const char *const *meta)
 {
+    const uint8_t *cover = (const uint8_t *)meta[3];
+    unsigned len = cow_size(meta[3], MCN_COVER_MAX), hash = 2166136261u, i;
+    char file[MCN_COVER_PATH];
+    int changed;
+
     (void)self;
+    changed = mcn_active(); /* switched off: no file */
+    for (i = 0; changed && i < len; i++) {
+        hash = (hash ^ cover[i]) * 16777619u; /* FNV-1a */
+    }
+    changed = changed && (len != art_len || hash != art_hash);
+    if (changed) {
+        art_len = len;
+        art_hash = hash;
+        file[0] = 0;
+        if (len && mcn_cover_save(MCN_COVER_DIR, cover, len, mcn_now_ms(), file, sizeof(file))) {
+            file[0] = 0;
+        }
+    }
     lock();
     mcn_aa_copy(title, sizeof(title), meta[0], cow_len(meta[0]));
     mcn_aa_copy(album, sizeof(album), meta[1], cow_len(meta[1]));
     mcn_aa_copy(artist, sizeof(artist), meta[2], cow_len(meta[2]));
+    if (changed) {
+        memcpy(art, file, sizeof(art));
+    }
     media_publish();
     unlock();
 }

@@ -58,8 +58,9 @@ stays away.
 <td valign="top">
 
 ### 🎵 Now playing on the cluster
-The track playing on the phone — title, artist, album — in the cluster's media view, instead of
-just "Apple CarPlay". Hidden when you pause.
+The track playing on the phone — title, artist, album and its cover — in the cluster's media view,
+instead of just "Apple CarPlay". Hidden when you pause. (With a cover the cluster shows a USB
+source icon: it draws covers only for local media.)
 
 </td>
 <td valign="top">

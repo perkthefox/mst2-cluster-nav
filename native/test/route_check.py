@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Host checks of the actual C decoder with sanitizers, no phone or vendor code."""
 import ctypes as C
+import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +56,9 @@ def tlv(key, data=b''):
 
 def num(key, value, size):
     return tlv(key, value.to_bytes(size, 'big', signed=value < 0))
+
+
+MD = b'metadata=Title,Artist,AlbumTitle,ArtworkFileTransferIdentifier\n'
 
 
 def msg(kind, *fields):
@@ -360,7 +366,7 @@ class RouteCheck(unittest.TestCase):
                 b'playback = Status,AppName\nother=1\n[location]\nenable=yes\n')
         n = lib.mcn_route_config(data, len(data), out, len(out))
         text = out.raw[:n]
-        self.assertIn(b'[nowplaying]\nenable=yes\nmetadata=Title,Artist,AlbumTitle\n'
+        self.assertIn(b'[nowplaying]\nenable=yes\n' + MD +
                       b'playback=Status\nother=1\n[location]\nenable=yes\n', text)
         self.assertEqual(text.count(b'[nowplaying]'), 1)
         # a section with only enable= must still get metadata and playback added before the
@@ -368,21 +374,21 @@ class RouteCheck(unittest.TestCase):
         data = b'[nowplaying]\nenable=no\n[eap]\nenable=yes\n'
         n = lib.mcn_route_config(data, len(data), out, len(out))
         text = out.raw[:n]
-        self.assertIn(b'[nowplaying]\nenable=yes\nmetadata=Title,Artist,AlbumTitle\n'
+        self.assertIn(b'[nowplaying]\nenable=yes\n' + MD +
                       b'playback=Status\n[eap]\nenable=yes\n', text)
-        self.assertEqual(text.count(b'metadata=Title,Artist,AlbumTitle'), 1)
+        self.assertEqual(text.count(MD), 1)
         self.assertEqual(text.count(b'playback=Status'), 1)
         # a partial section at end of file
         data = b'[accessory]\nx=1\n[nowplaying]\nmetadata=Title\n'
         n = lib.mcn_route_config(data, len(data), out, len(out))
         text = out.raw[:n]
-        self.assertIn(b'[nowplaying]\nmetadata=Title,Artist,AlbumTitle\nenable=yes\n'
+        self.assertIn(b'[nowplaying]\n' + MD + b'enable=yes\n'
                       b'playback=Status\n', text)
         self.assertEqual(text.count(b'enable=yes'), 1)
         data = b'[accessory]\nname=x\n'
         n = lib.mcn_route_config(data, len(data), out, len(out))
-        self.assertTrue(out.raw[:n].endswith(b'[nowplaying]\nenable=yes\n'
-                                             b'metadata=Title,Artist,AlbumTitle\nplayback=Status\n'))
+        self.assertTrue(out.raw[:n].endswith(b'[nowplaying]\nenable=yes\n' +
+                                             MD + b'playback=Status\n'))
 
     def media(self, pps, size=4096):
         out = C.create_string_buffer(size)
@@ -606,7 +612,7 @@ class RouteCheck(unittest.TestCase):
         self.assertGreater(n, 0)
         text = out.raw[:n]
         # Only [nowplaying]'s three keys change; [ident] is added once, at the end.
-        np = (b'[nowplaying]\nenable=yes\nmetadata=Title,Artist,AlbumTitle\n'
+        np = (b'[nowplaying]\nenable=yes\n' + MD +
               b'playback=Status\n\n')
         self.assertEqual(text, data.replace(data[data.index(b'[nowplaying]'):
                                                  data.index(b'# location')], np)
@@ -626,7 +632,16 @@ class RouteCheck(unittest.TestCase):
 
 lib.mcn_aa_turn.argtypes = [C.c_void_p, C.c_char_p, C.c_uint, C.c_int, C.c_int, C.c_int, C.c_int]
 lib.mcn_aa_copy.argtypes = [C.c_void_p, C.c_uint, C.c_char_p, C.c_uint]
-lib.mcn_aa_media_text.argtypes = [C.c_char_p, C.c_char_p, C.c_char_p, C.c_void_p, C.c_uint]
+lib.mcn_aa_media_text.argtypes = [C.c_char_p, C.c_char_p, C.c_char_p, C.c_char_p, C.c_void_p,
+                                  C.c_uint]
+lib.mcn_cover_save.argtypes = [C.c_char_p, C.c_char_p, C.c_uint, C.c_uint, C.c_void_p, C.c_uint]
+lib.mcn_art_reset.argtypes = [C.c_void_p]
+lib.mcn_art_poll.argtypes = [C.c_void_p, C.c_char_p, C.c_uint, C.c_uint]
+lib.mcn_art_poll.restype = C.c_uint
+lib.mcn_art_fetched.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+lib.mcn_cover_clean.argtypes = [C.c_char_p]
+lib.mcn_art_current.argtypes = [C.c_void_p]
+lib.mcn_art_current.restype = C.c_char_p
 
 
 class AndroidAutoCheck(unittest.TestCase):
@@ -663,26 +678,56 @@ class AndroidAutoCheck(unittest.TestCase):
         lib.mcn_aa_status(self.state, 2)
         self.assertEqual(self.snap(), {'active': '0'})
 
-    def test_traffic_side_is_never_guessed(self):
-        lib.mcn_aa_status(self.state, 1)
-        self.turn('', self.LEFT, 11)                               # ROUNDABOUT_ENTER, side left
-        self.assertEqual((self.snap()['lht'], self.snap()['type']), ('0', '6'))
-        self.turn('', self.LEFT, 13, 3)                            # exit 3, no angle
+    def roundabout(self, side, event, number=-1, angle=-1):
+        self.turn('', side, event, number, angle)
         snap = self.snap()
-        self.assertEqual((snap['lht'], snap['type']), ('0', '30'))
-        self.assertNotIn('angle', snap)
+        return tuple(snap.get(k) for k in ('lht', 'type', 'angle', 'around', 'exit'))
 
-    def test_roundabout_exit_direction_from_turn_angle(self):
+    def test_roundabout_traffic_side_from_turn_side(self):
         lib.mcn_aa_status(self.state, 1)
-        for travelled, number, angle in ((90, 1, '90'), (270, 3, '-90'), (45, 1, '135'),
-                                         (359, 4, '-179')):
-            self.turn('', self.UNSPECIFIED, 13, number, travelled)
-            snap = self.snap()
-            self.assertEqual((snap['type'], snap.get('angle')), (str(27 + number), angle))
-        self.turn('', self.UNSPECIFIED, 13, 2, 180)                # ahead: the exit number decides
-        self.assertNotIn('angle', self.snap())
-        self.turn('', self.UNSPECIFIED, 13, -1, 90)                # no exit number: entering only
-        self.assertEqual(self.snap()['type'], '6')
+        # side 1 LEFT = left-hand traffic, 2 RIGHT = right-hand, 3 or absent (0) = unknown
+        self.assertEqual(self.roundabout(self.RIGHT, 13, 1, 90), ('0', '28', '90', '90', '1'))
+        self.assertEqual(self.roundabout(self.LEFT, 13, 1, 90), ('1', '28', '-90', '90', '1'))
+        self.assertEqual(self.roundabout(self.UNSPECIFIED, 13, 1, 90),
+                         ('-1', '28', None, '90', '1'))
+        self.assertEqual(self.roundabout(0, 13, 1, 90), ('-1', '28', None, '90', '1'))
+        # entering and leaving without exit number: the enter and exit pictures, side as above
+        self.assertEqual(self.roundabout(self.LEFT, 11), ('1', '6', None, None, None))
+        self.assertEqual(self.roundabout(self.RIGHT, 12), ('0', '7', None, None, None))
+        self.assertEqual(self.roundabout(self.UNSPECIFIED, 12), ('-1', '7', None, None, None))
+        # ENTER with an exit number is drawn like ENTER_AND_EXIT
+        self.assertEqual(self.roundabout(self.RIGHT, 11, 3, 270), ('0', '30', '-90', '270', '3'))
+        # every other maneuver keeps right-hand traffic, whatever its side
+        self.turn('', self.LEFT, 4)
+        self.assertEqual(self.snap()['lht'], '0')
+
+    def test_roundabout_exit_angle_from_travel_angle(self):
+        lib.mcn_aa_status(self.state, 1)
+        for travelled, number, rht, lht in ((90, 1, '90', '-90'), (270, 3, '-90', '90'),
+                                            (45, 1, '135', '-135'), (359, 4, '-179', '179'),
+                                            (360, 5, '-180', '180'), (180, 2, '0', '0')):
+            self.assertEqual(self.roundabout(self.RIGHT, 13, number, travelled),
+                             ('0', str(27 + number), rht, str(travelled), str(number)))
+            self.assertEqual(self.roundabout(self.LEFT, 13, number, travelled),
+                             ('1', str(27 + number), lht, str(travelled), str(number)))
+        # no exit number: entering only, the travel angle still goes to the HMI
+        self.assertEqual(self.roundabout(self.RIGHT, 13, -1, 90), ('0', '6', None, '90', None))
+        # angles outside 1..360 are not a travel angle
+        self.assertEqual(self.roundabout(self.RIGHT, 13, -1, 361), ('0', '6', None, None, None))
+
+    def test_roundabout_angle_from_exit_number_when_app_sends_none(self):
+        lib.mcn_aa_status(self.state, 1)
+        # angle 0 (some apps) or absent (-1): 90 per exit, at most 315
+        for number, around, rht in ((1, '90', '90'), (2, '180', '0'), (3, '270', '-90'),
+                                    (4, '315', '-135'), (7, '315', '-135')):
+            for angle in (0, -1):
+                self.assertEqual(self.roundabout(self.RIGHT, 13, number, angle),
+                                 ('0', str(27 + number), rht, around, str(number)))
+        self.assertEqual(self.roundabout(self.LEFT, 13, 1, 0), ('1', '28', '-90', '90', '1'))
+        self.assertEqual(self.roundabout(self.UNSPECIFIED, 13, 3, 0),
+                         ('-1', '30', None, '270', '3'))
+        # exit numbers beyond the 19 iAP2 types: the enter picture, the exit not named
+        self.assertEqual(self.roundabout(self.RIGHT, 13, 20, 0), ('0', '6', None, '315', None))
 
     def test_angle_only_where_the_picture_uses_it(self):
         lib.mcn_aa_status(self.state, 1)
@@ -712,14 +757,19 @@ class AndroidAutoCheck(unittest.TestCase):
         lib.mcn_aa_copy(out, 6, None, 5)
         self.assertEqual(out.value, b'')
 
-    def media(self, title, artist='', album='', size=4096):
+    def media(self, title, artist='', album='', art=None, size=4096):
         out = C.create_string_buffer(size)
-        n = lib.mcn_aa_media_text(title.encode(), artist.encode(), album.encode(), out, size)
+        n = lib.mcn_aa_media_text(title.encode(), artist.encode(), album.encode(),
+                                  art.encode() if art is not None else None, out, size)
         return n if n <= 0 else out.raw[:n].decode()
 
     def test_now_playing_is_marked_android_auto(self):
         self.assertEqual(self.media('Песня', 'Группа', 'Альбом'),
                          'media=1\ntitle=Песня\nartist=Группа\nalbum=Альбом\nsrc=aa\n')
+        self.assertEqual(self.media('T', art=''), 'media=1\ntitle=T\nartist=\nalbum=\nsrc=aa\n')
+        self.assertEqual(self.media('T', 'A', 'B', '/dev/shmem/mst2-cluster-nav-cover-7.jpg'),
+                         'media=1\ntitle=T\nartist=A\nalbum=B\n'
+                         'art=/dev/shmem/mst2-cluster-nav-cover-7.jpg\nsrc=aa\n')
         self.assertEqual(self.media('', 'A'), 0)
         self.assertEqual(self.media('T', size=20), -1)
 
@@ -732,6 +782,157 @@ class AndroidAutoCheck(unittest.TestCase):
         self.assertEqual(len(services), 1)
         self.assertEqual(RouteCheck.v(RouteCheck.pb(services[0])[1]), 5)
 
+
+JPEG = b'\xff\xd8\xff\xe0' + bytes(range(256)) * 4
+PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
+
+
+class CoverCheck(unittest.TestCase):
+    """common/media.c: cover files for the HMI and the CarPlay artwork in the PPS object."""
+
+    def setUp(self):
+        # A short directory: the path must fit MCN_COVER_PATH, as /dev/shmem does.
+        self.dir = tempfile.mkdtemp(dir='/tmp')
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def save(self, data, now=1000):
+        out = C.create_string_buffer(96)
+        n = lib.mcn_cover_save(self.dir.encode(), data, len(data), now, out, len(out))
+        return out.value.decode() if n == 0 else None
+
+    def files(self):
+        return sorted(os.listdir(self.dir))
+
+    def test_atomic_files_rotate_and_only_images(self):
+        first = self.save(JPEG)
+        self.assertTrue(first.startswith(self.dir + '/mst2-cluster-nav-cover-'))
+        self.assertTrue(first.endswith('.jpg'))
+        self.assertEqual(Path(first).read_bytes(), JPEG)
+        seq = int(first.rsplit('-', 1)[1].split('.')[0])
+        second = self.save(PNG)
+        third = self.save(JPEG)
+        self.assertEqual((second, third), (f'{self.dir}/mst2-cluster-nav-cover-{seq + 1}.png',
+                                           f'{self.dir}/mst2-cluster-nav-cover-{seq + 2}.jpg'))
+        # the last two stay, no temporary file is left
+        self.assertEqual(self.files(), [Path(second).name, Path(third).name])
+        self.assertIsNone(self.save(b'GIF89a' + b'\x00' * 10))
+        self.assertIsNone(self.save(b'\xff\xd8'))
+        self.assertIsNone(self.save(b'\xff\xd8\xff' + b'\x00' * (1024 * 1024 - 2)))
+        self.assertIsNotNone(self.save(b'\xff\xd8\xff' + b'\x00' * (1024 * 1024 - 3)))
+        self.assertEqual(len(self.files()), 2)
+
+    def test_unwritable_directory_gives_no_path(self):
+        out = C.create_string_buffer(96)
+        self.assertEqual(lib.mcn_cover_save(b'/nonexistent-dir', JPEG, len(JPEG), 5, out, 96), -1)
+        long_dir = b'/' + b'x' * 80
+        self.assertEqual(lib.mcn_cover_save(long_dir, JPEG, len(JPEG), 5, out, 96), -1)
+
+    @staticmethod
+    def pps(title, art=None):
+        text = 'MediaItemTitle::' + title + '\nPlaybackStatus::Playing\n'
+        if art:
+            text += ('MediaItemArtworkFileTransferIdentifier::%d\nMediaItemArtworkSize::%d\n'
+                     % art)
+        return text.encode()
+
+    def poller(self):
+        st = C.create_string_buffer(1024)
+        lib.mcn_art_reset(st)
+        self.state = st
+        return lambda title, art=None, now=0: lib.mcn_art_poll(st, self.pps(title, art),
+                                                               len(self.pps(title, art)), now)
+
+    def current(self):
+        return lib.mcn_art_current(self.state).decode()
+
+    def test_artwork_belongs_to_the_track_it_came_with(self):
+        poll = self.poller()
+        st, current = self.state, self.current
+        self.assertEqual(poll('A'), 0)
+        self.assertEqual(poll('A', (130, 5000)), 5000)          # transfer of A's cover done
+        lib.mcn_art_fetched(st, b'/dev/shmem/mst2-cluster-nav-cover-1.jpg', 1)
+        self.assertEqual(current(), '/dev/shmem/mst2-cluster-nav-cover-1.jpg')
+        self.assertEqual(poll('A', (130, 5000), 60000), 0)      # fetched once only
+        self.assertEqual(current(), '/dev/shmem/mst2-cluster-nav-cover-1.jpg')
+        # next track: the object still holds A's pair, so B has no cover until its own comes
+        self.assertEqual(poll('B', (130, 5000)), 0)
+        self.assertEqual(current(), '')
+        self.assertEqual(poll('B', (131, 7000)), 7000)
+        lib.mcn_art_fetched(st, None, 1)
+        self.assertEqual(current(), '')
+        # title and pair change within one poll: the pair is the new track's
+        self.assertEqual(poll('C', (132, 6000)), 6000)
+        lib.mcn_art_fetched(st, b'/x/c.png', 1)
+        self.assertEqual(current(), '/x/c.png')
+        # empty or too big transfers are no cover, never fetched; a deleted size line neither
+        self.assertEqual(poll('D', (133, 0)), 0)
+        self.assertEqual(current(), '')
+        for now in (0, 6000, 12000, 18000):
+            self.assertEqual(poll('E', (134, 1024 * 1024 + 1), now), 0)
+        self.assertEqual(current(), '')
+        text = self.pps('E', (135, 100)) + b'-MediaItemArtworkSize\n'
+        self.assertEqual(lib.mcn_art_poll(st, text, len(text), 0), 0)
+
+    def test_failed_reads_are_retried_while_the_pair_is_current(self):
+        poll = self.poller()
+        st = self.state
+        self.assertEqual(poll('A', (130, 5000), 1000), 5000)
+        lib.mcn_art_fetched(st, None, 1)                        # the read failed
+        self.assertEqual(poll('A', (130, 5000), 2000), 0)       # not every second
+        self.assertEqual(poll('A', (130, 5000), 6000), 5000)    # again after 5 s
+        lib.mcn_art_fetched(st, None, 1)
+        self.assertEqual(poll('A', (130, 5000), 11000), 5000)
+        lib.mcn_art_fetched(st, None, 1)
+        self.assertEqual(poll('A', (130, 5000), 16000), 0)      # three failed reads: done
+        self.assertEqual(poll('A', (130, 5000), 60000), 0)
+        # the driver without the image yet does not count: asked every 5 s until it has it
+        poll = self.poller()
+        st = self.state
+        for now in range(0, 60000, 5000):
+            self.assertEqual(poll('B', (140, 900), now), 900)
+            lib.mcn_art_fetched(st, None, 0)
+        self.assertEqual(self.current(), '')
+        self.assertEqual(poll('B', (140, 900), 60000), 900)
+        lib.mcn_art_fetched(st, b'/x/b.jpg', 1)
+        self.assertEqual(self.current(), '/x/b.jpg')
+
+    def test_same_pair_published_again_after_a_reconnect(self):
+        # The object keeps the last session's pair; a new mm-ipod has no image yet, and the
+        # resumed track's transfer completes with the very same id and size.
+        poll = self.poller()
+        st = self.state
+        self.assertEqual(poll('A', (130, 5000), 0), 5000)       # first poll takes the stale pair
+        lib.mcn_art_fetched(st, None, 0)                        # driver: no such image
+        self.assertEqual(poll('A', (130, 5000), 1000), 0)
+        self.assertEqual(poll('A', (130, 5000), 5000), 5000)    # same lines, now the real one
+        lib.mcn_art_fetched(st, b'/x/a.jpg', 1)
+        self.assertEqual(self.current(), '/x/a.jpg')
+        # a stale pair whose read started and failed is retried too
+        poll = self.poller()
+        st = self.state
+        self.assertEqual(poll('A', (130, 5000), 0), 5000)
+        lib.mcn_art_fetched(st, None, 1)
+        self.assertEqual(poll('A', (130, 5000), 5000), 5000)
+        lib.mcn_art_fetched(st, b'/x/a2.jpg', 1)
+        self.assertEqual(self.current(), '/x/a2.jpg')
+
+    def test_rotation_on_failure_and_clean(self):
+        first = self.save(JPEG)
+        seq = int(first.rsplit('-', 1)[1].split('.')[0])
+        self.save(PNG)
+        blocker = Path(self.dir, f'mst2-cluster-nav-cover-{seq + 2}.tmp')
+        blocker.mkdir()                                         # the next write cannot open
+        self.assertIsNone(self.save(JPEG))
+        blocker.rmdir()
+        # seq + 2 was taken by the failed write: its rotation still removed seq
+        self.assertEqual(self.files(), [f'mst2-cluster-nav-cover-{seq + 1}.png'])
+        Path(self.dir, 'other-file').write_bytes(b'x')
+        Path(self.dir, 'mst2-cluster-nav-cover-1.tmp').write_bytes(b'x')
+        lib.mcn_cover_clean(self.dir.encode())
+        self.assertEqual(self.files(), ['other-file'])
+        lib.mcn_cover_clean(b'/nonexistent-dir')
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

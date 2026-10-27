@@ -126,6 +126,15 @@ int sem_post(sem_t *sem);
 int sem_timedwait_monotonic(sem_t *sem, const struct timespec *abs_timeout);
 int ftruncate(int fd, off_t length);
 int unlink(const char *path);
+int rename(const char *from, const char *to);
+/* QNX 6.5 struct dirent: 64-bit d_ino and d_offset, d_reclen at 0x10, d_namelen at 0x12, d_name
+ * at 0x14 (libc.so.3 readdir 0x178f8 finds the entry's extra data at align8(0x14 + namelen + 1),
+ * ev_16d6b0e7). */
+typedef struct mcn_dir DIR;
+DIR *opendir(const char *path);
+void *readdir(DIR *dir);
+int closedir(DIR *dir);
+#define MCN_DIRENT_NAME(e) ((const char *)(e) + 0x14)
 void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
 
 /* libsocket.so.3 */

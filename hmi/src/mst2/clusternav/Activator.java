@@ -28,6 +28,7 @@ public final class Activator implements BundleActivator {
             log("started");
             settle();
             ClusterCarPlay.install();
+            CallLog.install();
             NowPlaying.start();
             phone = new PhoneLink();
             phoneThread = new Thread(phone, "mst2-cluster-nav-phone");
@@ -88,6 +89,7 @@ public final class Activator implements BundleActivator {
         }
         ClusterCarPlay.uninstall();
         NowPlaying.uninstall();
+        CallLog.uninstall();
     }
 
     /* The log in RAM all parts of the mod append to; GEM "Save diagnostics" copies it. */

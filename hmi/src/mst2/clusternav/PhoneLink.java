@@ -17,7 +17,9 @@ import java.net.InetAddress;
  *   active=1           0 ends guidance
  *   type=2             iAP2 maneuver type 0..53 (Android Auto's maneuvers are mapped onto them)
  *   angle=90           exit angle, degrees, negative = left (absent: unknown)
- *   lht=0              1 for left-hand traffic
+ *   lht=0              1 for left-hand traffic, -1 unknown: the HMI decides (TrafficSide)
+ *   around=90          Android Auto roundabouts: degrees travelled round, 1..360 (Maneuvers)
+ *   exit=2             Android Auto roundabouts: exit number (already in type 28..46; ignored)
  *   roads=-90,0,90     junction road angles (side streets)
  *   dist=250           metres to the maneuver, -1 unknown
  *   step=400           metres from the previous maneuver (for the approach bar)
@@ -33,8 +35,8 @@ import java.net.InetAddress;
  * the phone owns the cluster (ClusterCarPlay).
  *
  * The phone's track comes once a second while it plays, "media=1" with "title=", "artist=",
- * "album=" lines and "src=aa" for Android Auto (absent: CarPlay), and "media=0" when it ends
- * (NowPlaying).
+ * "album=" lines, "src=aa" for Android Auto (absent: CarPlay) and "art=" with the path of its
+ * cover picture (absent: none), and "media=0" when it ends (NowPlaying, ClusterCover).
  *
  * Silence for GUIDANCE_TIMEOUT_MS also ends guidance, and for VIDEO_TIMEOUT_MS the video, so a
  * dead phone or process cannot leave the cluster to it. J9 Foundation 1.1 has no nanoTime, so
@@ -104,6 +106,8 @@ final class PhoneLink implements Runnable {
                 ClusterCarPlay.setPhoneOwnsCluster(!off && (active || video));
                 KombiMap.phoneVideo(!off && video);
                 NowPlaying.tick(now);
+                ClusterCover.tick(now);
+                CallLog.tick(now);
             }
         } catch (Throwable t) {
             if (running) {
@@ -163,7 +167,8 @@ final class PhoneLink implements Runnable {
         Guidance g = new Guidance();
         int type = -1;
         int angle = Maneuvers.NO_ANGLE;
-        boolean lht = false;
+        int lht = 0;
+        int around = 0;
         int[] roads = null;
         int step = 0;
         int laneCount = 0;
@@ -191,7 +196,9 @@ final class PhoneLink implements Runnable {
             } else if (key.equals("angle")) {
                 angle = number(value, Maneuvers.NO_ANGLE);
             } else if (key.equals("lht")) {
-                lht = value.equals("1");
+                lht = number(value, 0);
+            } else if (key.equals("around")) {
+                around = number(value, 0);
             } else if (key.equals("roads")) {
                 roads = numbers(value);
             } else if (key.equals("dist")) {
@@ -217,7 +224,8 @@ final class PhoneLink implements Runnable {
                 }
             }
         }
-        int[] m = Maneuvers.map(type, angle, lht);
+        boolean left = lht < 0 ? TrafficSide.leftHand() : lht == 1;
+        int[] m = Maneuvers.map(type, angle, left, around);
         g.mainElement = m[0];
         g.direction = m[1];
         g.sideStreets = Maneuvers.sideStreets(roads, angle);

@@ -20,6 +20,16 @@ public final class ManeuversCheck {
      * docs/MANEUVERS.md without an angle, every iAP2 type 0..53:
      * {type, right-hand main, direction, left-hand main, direction}.
      */
+    private static void expectAround(String what, int type, int around, boolean lht, int main,
+                                     int dir) {
+        int[] got = Maneuvers.map(type, Maneuvers.NO_ANGLE, lht, around);
+        if (got[0] != main || got[1] != dir) {
+            failures++;
+            System.out.println("FAIL " + what + ": got " + got[0] + "/" + got[1]
+                + ", want " + main + "/" + dir);
+        }
+    }
+
     private static final int[][] TABLE = {
         { 0, 11, 0, 11, 0 }, { 1, 13, 64, 13, 64 }, { 2, 13, 192, 13, 192 }, { 3, 13, 0, 13, 0 },
         { 4, 25, 64, 25, 192 }, { 5, 11, 0, 11, 0 }, { 6, 13, 192, 13, 64 },
@@ -87,6 +97,48 @@ public final class ManeuversCheck {
         expect("end of road right, wrong sign", 21, -40, false, 13, 192);
         expect("end of road right sharp", 21, 150, false, 13, 160);
 
+        /* Android Auto roundabouts: degrees travelled round, both traffic sides. */
+        expectAround("1st exit right, right-hand traffic", 30, 90, false, 21, 192);
+        expectAround("90 round, left-hand traffic: left", 30, 90, true, 22, 64);
+        expectAround("straight across, exit 3 of 5", 30, 180, false, 21, 0);
+        expectAround("straight across, lht", 30, 180, true, 22, 0);
+        expectAround("270 round: left", 31, 270, false, 21, 64);
+        expectAround("270 round, lht: right", 31, 270, true, 22, 192);
+        expectAround("full circle: back", 31, 360, false, 21, 128);
+        expectAround("full circle, lht: back", 31, 360, true, 22, 128);
+        expectAround("45 round: sharp right", 29, 45, false, 21, 160);
+        expectAround("no travel: the exit number", 30, 0, false, 21, 64);
+        /* Entering without an exit number (type 6) but with the travel round it. */
+        expectAround("enter, 270 round: left", 6, 270, false, 21, 64);
+        expectAround("enter, 270 round, lht: right", 6, 270, true, 22, 192);
+        expectAround("enter, 90 round: right", 6, 90, false, 21, 192);
+        expectAround("enter, no travel: turn", 6, 0, false, 13, 192);
+
+        /* lht=-1: the HMI decides (host: no navigation, no coding -> right-hand traffic). */
+        Guidance r = PhoneLink.parse("active=1\nlht=-1\ntype=30\naround=270\n");
+        check(r.mainElement == 21 && r.direction == 64, "lht=-1 roundabout: " + r);
+        r = PhoneLink.parse("active=1\nlht=-1\ntype=6\naround=180\n");
+        check(r.mainElement == 21 && r.direction == 0, "lht=-1 enter, straight across: " + r);
+        r = PhoneLink.parse("active=1\nlht=-1\ntype=6\naround=270\n");
+        check(r.mainElement == 21 && r.direction == 64, "lht=-1 enter, 270 round: " + r);
+        r = PhoneLink.parse("active=1\nlht=1\ntype=30\nangle=90\n");
+        check(r.mainElement == 22 && r.direction == 192, "lht=1 with an angle: " + r);
+        r = PhoneLink.parse("active=1\nlht=-1\ntype=4\n");
+        check(r.mainElement == 25 && r.direction == 64, "lht=-1 u-turn: " + r);
+        check(!TrafficSide.decide(1, 2) && TrafficSide.decide(0, 1), "navigation country first");
+        check(TrafficSide.decide(-1, 2) && !TrafficSide.decide(-1, 1)
+            && !TrafficSide.decide(-1, 0), "steering wheel, then right-hand traffic");
+        org.dsi.ifc.navigation.CountryInfo[] countries = {
+            new org.dsi.ifc.navigation.CountryInfo("Deutschland", "D", 0, true, null, null),
+            null,
+            new org.dsi.ifc.navigation.CountryInfo("United Kingdom", "GB", 0, false, null, null),
+        };
+        check(TrafficSide.rightHand("GB", countries) == 0
+            && TrafficSide.rightHand("D", countries) == 1
+            && TrafficSide.rightHand("F", countries) == -1
+            && TrafficSide.rightHand("", countries) == -1
+            && TrafficSide.rightHand("D", null) == -1, "country table");
+
         String sides = Maneuvers.sideStreets(new int[] { -90, 0, 90, 1000 }, 90);
         check(sides.length() == 2 && sides.charAt(0) == 64 && sides.charAt(1) == 0, "side streets");
 
@@ -122,8 +174,9 @@ public final class ManeuversCheck {
         check(Datapool.admit(false, false), "falling edge: inactive written once");
         check(!Datapool.admit(false, false), "repeated inactive: nothing written");
 
-        System.out.println(failures == 0 ? "maneuvers: all 54 types both traffic sides, phone link,"
-            + " timeouts, write rule: ok" : "maneuvers: " + failures + " failure(s)");
+        System.out.println(failures == 0 ? "maneuvers: all 54 types both traffic sides, roundabout"
+            + " travel, unknown traffic side, phone link, timeouts, write rule: ok"
+            : "maneuvers: " + failures + " failure(s)");
         System.exit(failures == 0 ? 0 : 1);
     }
 }

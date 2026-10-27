@@ -6,12 +6,18 @@
  * (TurnSide LEFT 1, RIGHT 2, UNSPECIFIED 3; NextTurnEnum 0..19; ev_2f3ab597). The AA event and
  * side are turned into the iAP2 maneuver types the HMI already draws (Maneuvers.java).
  *
- * Traffic side: nothing in the library says whether a roundabout's turn_side is the way traffic
- * goes round it, nor what turn_angle is measured from (only the enum and field constants exist),
- * so right-hand traffic is assumed (lht=0) and turn_side is not read as handedness. turn_angle
- * of ROUNDABOUT_ENTER_AND_EXIT is taken as the public description of the field has it: degrees
- * travelled round the roundabout from the entry to the exit, 0..359 (counter-clockwise under
- * right-hand traffic), -1 when absent.
+ * Field layout (handleNavigationNextTurnEvent 0x8aab4, serializer 0xb99ec, ev_0463599f,
+ * ev_5b7b40e1): 1 road, 2 side (0 when absent), 3 event, 4 image, 5 turn_number, 6 turn_angle;
+ * the handler passes -1 for an absent number or angle.
+ *
+ * Roundabouts (events 11..13). The library only parses the fields; their meaning here follows the
+ * public description of the protocol and a public Android Auto receiver on this firmware whose
+ * author reports it checked in cars (a hypothesis until our car confirms it): turn_side is the
+ * traffic side of the roundabout (LEFT: left-hand traffic, clockwise; RIGHT: right-hand traffic,
+ * counter-clockwise; UNSPECIFIED or absent: unknown, the HMI decides), and turn_angle is the angle
+ * travelled round the roundabout from the entry to the exit, 1..360 (90: the first exit on the
+ * driver's outer side, 180: straight across). Some apps send 0 with a valid turn_number, so the
+ * angle then comes from the exit number: 90 per exit, at most 315. Every other event keeps lht=0.
  */
 #include "mcn_route.h"
 
@@ -91,13 +97,38 @@ void mcn_aa_distance(struct mcn_aa *a, int meters)
     }
 }
 
-/* iAP2 maneuver type for the HMI, -1 for none; *angle (iAP2 degrees, negative = left, 0 = none)
- * only where the picture needs it. */
+#define NO_ANGLE (-100000)
+
+/* Roundabout events: the traffic side from turn_side (1 left-hand, 0 right-hand, -1 unknown) and
+ * the travel angle (0 when neither the angle nor the exit number is known). */
+static int round_lht(const struct mcn_aa *a)
+{
+    return a->side == LEFT ? 1 : a->side == RIGHT ? 0 : -1;
+}
+
+static int round_around(const struct mcn_aa *a)
+{
+    if (a->angle >= 1 && a->angle <= 360) {
+        return a->angle;
+    }
+    if (a->number >= 1) {
+        return a->number >= 4 ? 315 : 90 * a->number; /* 90 + (n - 1) * 90, at most 315 */
+    }
+    return 0;
+}
+
+static int is_round(const struct mcn_aa *a)
+{
+    return a->event >= 11 && a->event <= 13;
+}
+
+/* iAP2 maneuver type for the HMI, -1 for none; *angle (iAP2 degrees, negative = left) only where
+ * the picture needs it, NO_ANGLE otherwise. */
 static int aa_type(const struct mcn_aa *a, int *angle)
 {
     int left = a->side == LEFT, right = a->side == RIGHT;
 
-    *angle = 0;
+    *angle = NO_ANGLE;
     switch (a->event) {
     case 1:
         return 11; /* DEPART: start route */
@@ -112,7 +143,9 @@ static int aa_type(const struct mcn_aa *a, int *angle)
         return left ? 47 : right ? 48 : 5; /* SHARP_TURN */
     case 6:
         /* U_TURN: to the side given, else the HMI's default for right-hand traffic (left). */
-        *angle = left ? -180 : right ? 180 : 0;
+        if (left || right) {
+            *angle = left ? -180 : 180;
+        }
         return 4;
     case 7:
         *angle = left ? -45 : 45;
@@ -121,18 +154,23 @@ static int aa_type(const struct mcn_aa *a, int *angle)
         return left ? 22 : right ? 23 : 8; /* OFF_RAMP */
     case 9:
         return left ? 13 : right ? 14 : 5; /* FORK: keep left or right */
-    case 11:
-        return 6; /* ROUNDABOUT_ENTER */
-    case 12:
-        return 7; /* ROUNDABOUT_EXIT */
-    case 13: /* ROUNDABOUT_ENTER_AND_EXIT: exit 1..19, its direction from turn_angle */
+    case 11: /* ROUNDABOUT_ENTER, with an exit number like ENTER_AND_EXIT */
+    case 13: /* ROUNDABOUT_ENTER_AND_EXIT: exit 1..19 */
         if (a->number < 1 || a->number > 19) {
             return 6;
         }
-        if (a->angle >= 0 && a->angle < 360) {
-            *angle = 180 - a->angle; /* 90 travelled: right, 180: ahead, 270: left */
+        /*
+         * The exit's direction as Maneuvers.java reads the CarPlay exit angle (negative = left):
+         * right-hand traffic goes round counter-clockwise, so 90 travelled is a right turn (+90),
+         * 180 ahead (0), 270 left (-90); left-hand traffic mirrors it. Unknown traffic side: no
+         * angle, the HMI turns `around` with its own side.
+         */
+        if (round_lht(a) >= 0 && round_around(a)) {
+            *angle = round_lht(a) ? round_around(a) - 180 : 180 - round_around(a);
         }
         return 27 + a->number;
+    case 12:
+        return 7; /* ROUNDABOUT_EXIT */
     case 14:
         return 3; /* STRAIGHT */
     case 16:
@@ -147,17 +185,30 @@ static int aa_type(const struct mcn_aa *a, int *angle)
 
 int mcn_aa_text(const struct mcn_aa *a, char *out, unsigned size)
 {
-    int angle, type, n;
+    int angle, type, n, lht = 0, around = 0;
 
     if (!a->active) {
         n = snprintf(out, size, "active=0\n");
         return n > 0 && (unsigned)n < size ? n : -1;
     }
     type = aa_type(a, &angle);
-    n = snprintf(out, size, "active=1\nlht=0\nstreet=%s\n", a->street);
+    if (is_round(a)) {
+        lht = round_lht(a);
+        around = round_around(a);
+    }
+    n = snprintf(out, size, "active=1\nlht=%d\nstreet=%s\n", lht, a->street);
     if (n > 0 && (unsigned)n < size && type >= 0) {
-        n += snprintf(out + n, size - (unsigned)n, angle ? "type=%d\nangle=%d\n" : "type=%d\n",
-                      type, angle);
+        n += snprintf(out + n, size - (unsigned)n, "type=%d\n", type);
+    }
+    if (n > 0 && (unsigned)n < size && angle != NO_ANGLE) {
+        n += snprintf(out + n, size - (unsigned)n, "angle=%d\n", angle);
+    }
+    /* Roundabout: the travel angle and the exit number, for the HMI's own traffic side. */
+    if (n > 0 && (unsigned)n < size && around) {
+        n += snprintf(out + n, size - (unsigned)n, "around=%d\n", around);
+    }
+    if (n > 0 && (unsigned)n < size && is_round(a) && a->number >= 1 && a->number <= 19) {
+        n += snprintf(out + n, size - (unsigned)n, "exit=%d\n", a->number);
     }
     /* Always a distance, -1 when unknown: without it the HMI would keep 0 (no bar, no text). */
     if (n > 0 && (unsigned)n < size) {
@@ -169,17 +220,19 @@ int mcn_aa_text(const struct mcn_aa *a, char *out, unsigned size)
 
 /*
  * PhoneLink now-playing datagram of Android Auto: "media=1" with title, artist and album (each
- * already one line, mcn_aa_copy) and "src=aa"; 0 without a title, -1 if out is too small.
+ * already one line, mcn_aa_copy), "art=" with the cover file when there is one (mcn_cover_save)
+ * and "src=aa"; 0 without a title, -1 if out is too small.
  */
-int mcn_aa_media_text(const char *title, const char *artist, const char *album, char *out,
-                      unsigned size)
+int mcn_aa_media_text(const char *title, const char *artist, const char *album, const char *art,
+                      char *out, unsigned size)
 {
     int n;
 
     if (!title[0]) {
         return 0;
     }
-    n = snprintf(out, size, "media=1\ntitle=%s\nartist=%s\nalbum=%s\nsrc=aa\n", title, artist,
-                 album);
+    n = snprintf(out, size, "media=1\ntitle=%s\nartist=%s\nalbum=%s\n%s%s%ssrc=aa\n", title,
+                 artist, album, art && art[0] ? "art=" : "", art && art[0] ? art : "",
+                 art && art[0] ? "\n" : "");
     return n > 0 && (unsigned)n < size ? n : -1;
 }
