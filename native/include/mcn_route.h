@@ -26,8 +26,15 @@
 #define MCN_RG_TEXT        256
 #define MCN_RG_EMPTY_MS    3000
 /* The phone sends route guidance only when it changes: Yandex Maps, parked, every ~6 s (car,
- * 2026-10-26). Silence is no end of guidance; only the arrival notice times out. */
+ * 2026-10-26). Short silence is no end of guidance; the arrival notice times out after
+ * MCN_RG_ARRIVED_MS. */
 #define MCN_RG_ARRIVED_MS  5000
+/*
+ * A route whose app has been silent this long is no longer shown (it comes back, with its
+ * cached maneuvers, on the next status): the phone gone without a TEARDOWN, mm-ipod dead, the
+ * app killed. 20 times the parked interval above; while moving the app sends several a second.
+ */
+#define MCN_RG_SILENT_MS   120000
 #define MCN_RG_REIDENT     0x10000
 
 struct mcn_maneuver {
@@ -65,13 +72,18 @@ struct mcn_route {
     /* The road the last passed maneuver led onto: where the car is when the app names none. */
     char passed[MCN_RG_TEXT];
     int rerouted; /* state 5 since the current maneuver changed */
+    /* A maneuver left within MCN_RG_PASSED_M whose successor is not cached yet: passed or not
+     * is decided when it is (Yandex Maps repeats one maneuver under new indices). */
+    int pending;
+    struct mcn_maneuver left;
 };
 
 /* Complete, validated control messages only; invalid TLVs leave the state untouched. */
 void mcn_route_reset(struct mcn_route *r);
 int mcn_route_message(struct mcn_route *r, const uint8_t *msg, unsigned n,
                       unsigned now);
-/* Guidance is on: a route is active and, once arrived, for MCN_RG_ARRIVED_MS more. */
+/* Guidance is on: a route is active, its last status younger than MCN_RG_SILENT_MS and, once
+ * arrived, for MCN_RG_ARRIVED_MS more. */
 int mcn_route_owns(const struct mcn_route *r, unsigned now);
 int mcn_route_text(const struct mcn_route *r, unsigned now, char *out,
                    unsigned size);
@@ -89,8 +101,43 @@ int mcn_route_log_feed(struct mcn_route_log *l, struct mcn_route *r,
                        const char *text, unsigned n, unsigned now);
 unsigned mcn_route_component(uint8_t *out);
 unsigned mcn_route_start(uint8_t *out);
-/* Rewrites only ident sendmsgs/recvmsgs, preserving pre-existing IDs and other sections. */
+/*
+ * Rewrites only ident sendmsgs/recvmsgs, preserving pre-existing IDs and other sections, and
+ * enables [nowplaying] with the attributes media.c reads.
+ */
 int mcn_route_config(const char *in, unsigned len, char *out, unsigned size);
+
+/*
+ * Android Auto navigation status (NavigationStatusEndpoint of the unit's receiver, gal.c):
+ * status, the next turn (event and side enums, road, roundabout exit number) and the distance.
+ * The receiver's protocol 1.3 carries no time or distance to the destination.
+ */
+struct mcn_aa {
+    int active, event, side, number, angle, meters, step;
+    char road[MCN_RG_TEXT];   /* the road of the next turn, as the phone names it */
+    char street[MCN_RG_TEXT]; /* the road of the turn passed last: the one the car is on */
+};
+void mcn_aa_reset(struct mcn_aa *a);
+void mcn_aa_status(struct mcn_aa *a, int status);
+void mcn_aa_turn(struct mcn_aa *a, const char *road, unsigned len, int side, int event,
+                 int number, int angle);
+void mcn_aa_distance(struct mcn_aa *a, int meters);
+/* PhoneLink snapshot ("active=0" when inactive); -1 if out is too small. */
+int mcn_aa_text(const struct mcn_aa *a, char *out, unsigned size);
+/* len bytes of src as one line in dst[size], cut on a UTF-8 boundary. */
+void mcn_aa_copy(char *dst, unsigned size, const char *src, unsigned len);
+/* Android Auto now playing: "media=1" .. "src=aa"; 0 without a title, -1 if out is too small. */
+int mcn_aa_media_text(const char *title, const char *artist, const char *album, char *out,
+                      unsigned size);
+/* SAL (sal/gal.c): resends live Android Auto guidance about once a second. */
+void mcn_gal_tick(unsigned now);
+
+/* The stock driver's now-playing PPS object (directory string + "nowplaying", ev_9b065e54). */
+#define MCN_MEDIA_PPS  "/pps/services/multimedia/iap2/nowplaying"
+#define MCN_MEDIA_TEXT 200
+/* "media=1\ntitle=..\nartist=..\nalbum=..\n" from the PPS object; 0 without a title, -1 if
+ * out is too small. */
+int mcn_media_text(const char *pps, unsigned len, char *out, unsigned size);
 
 /* iap2_ctrl_msg_table row (indexed by the message ID's high byte) and its msg_info
  * entries (indexed by the low byte); 12 bytes each on the 32-bit QNX ABI (E23, E24). */

@@ -42,19 +42,27 @@ extern const char mcn_component[];
 #define MCN_TRIAL_MARK "/dev/shmem/mst2-cluster-nav-trial"
 /* Made by runHMI.sh's guard when it keeps the mod out of this boot (off-reason says why). */
 #define MCN_OFF_MARK "/dev/shmem/mst2-cluster-nav-off"
+/*
+ * The guard's block in runHMI.sh (path from cpu.conf: "on -p 20 /bin/sh /tsd/hmi/runHMI.sh"),
+ * found by the line that opens it. Without it the hooks stay pass-through for the whole process.
+ */
+#define MCN_HMI_SH "/tsd/hmi/runHMI.sh"
+#define MCN_HMI_BLOCK "# >>> mst2-cluster-nav"
 /* Made by GEM when it arms the trial: that trial belongs to the next boot, not to this one. */
 #define MCN_ARMED_MARK "/dev/shmem/mst2-cluster-nav-armed"
 /*
- * Whether the hooks may do anything: no SD card carries the kill switch file, and the mod is
- * enabled, on its trial boot, or loaded on this boot. Checked again every 2 s, so a card put
+ * Whether the hooks may do anything: runHMI.sh carries the mod's block (checked once per
+ * process), no SD card carries the kill switch file, and the mod is enabled, on its trial boot,
+ * or loaded on this boot. Checked again every 2 s, so a card put
  * in later still switches the hooks to plain pass-through.
  */
 int mcn_active(void);
 /*
  * Crash guard of each service. mcn_guard_init (from mcn_init) turns the hooks of this service
  * off for good after STRIKES_OFF runs in a row ended while busy, that is while a stream or the
- * cluster replacement ran, followed by a quick restart; mcn_busy(1/0) brackets such work and
- * mcn_busy_tick refreshes its mark once a minute. State in MCN_DIR/{busy,strikes,off}-<component>.
+ * cluster replacement ran, followed by a quick restart; mcn_busy(1/0) brackets such work (pairs
+ * may nest and come from several threads: the mark stays while any is open) and mcn_busy_tick
+ * refreshes its mark once a minute. State in MCN_DIR/{busy,strikes,off}-<component>.
  */
 void mcn_guard_init(void);
 void mcn_busy(int on);

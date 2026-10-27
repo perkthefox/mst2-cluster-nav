@@ -13,6 +13,9 @@ LIB = OUT / 'route.dylib'
 subprocess.run(['clang', '-shared', '-fPIC', '-DMCN_HOST', '-std=c99', '-Wall', '-Wextra',
                 '-Werror', '-fsanitize=undefined', '-fno-sanitize-recover=all',
                 '-I' + str(ROOT / 'include'), str(ROOT / 'src/common/route.c'),
+                str(ROOT / 'src/common/media.c'), str(ROOT / 'src/common/aa.c'),
+                str(ROOT / 'src/common/transcode.c'), str(ROOT / 'src/common/aa_sdr.c'),
+                str(ROOT / 'src/common/scale.c'),
                 '-o', str(LIB)], check=True)
 lib = C.CDLL(str(LIB))
 lib.mcn_route_reset.argtypes = [C.c_void_p]
@@ -23,6 +26,25 @@ lib.mcn_route_log_feed.argtypes = [C.c_void_p, C.c_void_p, C.c_char_p, C.c_uint,
 lib.mcn_route_config.argtypes = [C.c_char_p, C.c_uint, C.c_void_p, C.c_uint]
 lib.mcn_route_component.argtypes = [C.c_void_p]
 lib.mcn_route_start.argtypes = [C.c_void_p]
+lib.mcn_media_text.argtypes = [C.c_char_p, C.c_uint, C.c_void_p, C.c_uint]
+lib.mcn_aa_reset.argtypes = [C.c_void_p]
+lib.mcn_aa_status.argtypes = [C.c_void_p, C.c_int]
+lib.mcn_aa_distance.argtypes = [C.c_void_p, C.c_int]
+lib.mcn_aa_text.argtypes = [C.c_void_p, C.c_void_p, C.c_uint]
+
+
+class Geom(C.Structure):
+    _fields_ = [(n, C.c_int) for n in ('mode', 'req_w', 'req_h', 'margin_w', 'margin_h',
+                                       'src_x', 'src_y', 'src_w', 'src_h', 'scale')]
+
+
+lib.mcn_geom.argtypes = [C.c_int, C.c_int, C.POINTER(Geom)]
+lib.mcn_geom.restype = C.c_int
+lib.mcn_aa_sdr.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_int, C.POINTER(Geom)]
+lib.mcn_aa_sdr.restype = C.c_int
+lib.mcn_scale_nv12.argtypes = [C.c_char_p, C.c_char_p, C.c_int, C.c_int, C.c_int,
+                               C.c_void_p, C.c_void_p, C.c_int, C.c_int, C.c_int]
+lib.mcn_yuy2_to_nv12.argtypes = [C.c_char_p, C.c_int, C.c_int, C.c_int, C.c_void_p, C.c_void_p, C.c_int]
 
 
 def tlv(key, data=b''):
@@ -85,10 +107,13 @@ class RouteCheck(unittest.TestCase):
         self.assertEqual(s['street'], '')
         self.status(now=2000)
         self.assertEqual(self.snapshot(2001)['type'], '2')
-        # Past maneuver 7 the car is on the road it led onto, line breaks removed.
+        # Past maneuver 7 the car is on the road it led onto, line breaks removed; known once
+        # maneuver 8 is (until then 8 may be maneuver 7 again under a new index).
         self.accept(msg(0x5201, num(10, 20, 4)), 2050)
         self.status(now=2100, index=8)
-        self.assertEqual(self.snapshot(2101)['street'], 'Седьмая active=0')
+        self.assertEqual(self.snapshot(2101)['street'], '')
+        self.accept(msg(0x5202, num(1, 8, 2), num(3, 1, 1)), 2150)
+        self.assertEqual(self.snapshot(2151)['street'], 'Седьмая active=0')
 
     def test_empty_list_holds_then_hides_and_recovers_cache(self):
         self.accept(self.maneuver())
@@ -325,9 +350,387 @@ class RouteCheck(unittest.TestCase):
             self.assertEqual(first.count(b'sendmsgs='), 1)
             self.assertEqual(first.count(b'recvmsgs='), 1)
             if b'location' in data:
-                self.assertTrue(first.endswith(b'[location]\nenable=1\n'))
+                self.assertIn(b'[location]\nenable=1\n[nowplaying]\n', first)
                 self.assertIn(b'sendmsgs=0x5000,20992,0x5203\n', first)
         self.assertEqual(lib.mcn_route_config(b'', 0, out, 4), -1)
+
+    def test_cfg_enables_now_playing(self):
+        out = C.create_string_buffer(4096)
+        data = (b'[nowplaying]\nenable=no\nmetadata=Title,ArtworkFileTransferIdentifier\n'
+                b'playback = Status,AppName\nother=1\n[location]\nenable=yes\n')
+        n = lib.mcn_route_config(data, len(data), out, len(out))
+        text = out.raw[:n]
+        self.assertIn(b'[nowplaying]\nenable=yes\nmetadata=Title,Artist,AlbumTitle\n'
+                      b'playback=Status\nother=1\n[location]\nenable=yes\n', text)
+        self.assertEqual(text.count(b'[nowplaying]'), 1)
+        # a section with only enable= must still get metadata and playback added before the
+        # next section and only once (code review: partial section).
+        data = b'[nowplaying]\nenable=no\n[eap]\nenable=yes\n'
+        n = lib.mcn_route_config(data, len(data), out, len(out))
+        text = out.raw[:n]
+        self.assertIn(b'[nowplaying]\nenable=yes\nmetadata=Title,Artist,AlbumTitle\n'
+                      b'playback=Status\n[eap]\nenable=yes\n', text)
+        self.assertEqual(text.count(b'metadata=Title,Artist,AlbumTitle'), 1)
+        self.assertEqual(text.count(b'playback=Status'), 1)
+        # a partial section at end of file
+        data = b'[accessory]\nx=1\n[nowplaying]\nmetadata=Title\n'
+        n = lib.mcn_route_config(data, len(data), out, len(out))
+        text = out.raw[:n]
+        self.assertIn(b'[nowplaying]\nmetadata=Title,Artist,AlbumTitle\nenable=yes\n'
+                      b'playback=Status\n', text)
+        self.assertEqual(text.count(b'enable=yes'), 1)
+        data = b'[accessory]\nname=x\n'
+        n = lib.mcn_route_config(data, len(data), out, len(out))
+        self.assertTrue(out.raw[:n].endswith(b'[nowplaying]\nenable=yes\n'
+                                             b'metadata=Title,Artist,AlbumTitle\nplayback=Status\n'))
+
+    def media(self, pps, size=4096):
+        out = C.create_string_buffer(size)
+        n = lib.mcn_media_text(pps, len(pps), out, size)
+        return n if n <= 0 else out.raw[:n].decode()
+
+    @staticmethod
+    def varints(blob):
+        out, v, sh = [], 0, 0
+        for b in blob:
+            v |= (b & 0x7f) << sh
+            if b & 0x80:
+                sh += 7
+            else:
+                out.append(v)
+                v = sh = 0
+        return out
+
+    @staticmethod
+    def pb(blob):
+        """field number -> list of values (int for varint, bytes for length-delimited)."""
+        fields, at = {}, 0
+        while at < len(blob):
+            tag, at = RouteCheck._take(blob, at)
+            field, wire = tag >> 3, tag & 7
+            if wire == 0:
+                val, at = RouteCheck._take(blob, at)
+            elif wire == 2:
+                n, at = RouteCheck._take(blob, at)
+                val, at = blob[at:at + n], at + n
+            else:
+                raise AssertionError('wire %d' % wire)
+            fields.setdefault(field, []).append(val)
+        return fields
+
+    @staticmethod
+    def _take(blob, at):
+        v, sh = 0, 0
+        while True:
+            b = blob[at]
+            at += 1
+            v |= (b & 0x7f) << sh
+            if not b & 0x80:
+                return v, at
+            sh += 7
+
+    @staticmethod
+    def v(values):
+        assert len(values) == 1
+        return values[0]
+
+    def geom(self, mode, factor=1000):
+        g = Geom()
+        self.assertEqual(lib.mcn_geom(mode, factor, C.byref(g)), 0)
+        return g
+
+    def test_transcode_geometry(self):
+        self.assertEqual(lib.mcn_geom(0, 0, C.byref(Geom())), -1)  # OFF has no geometry
+        aa = self.geom(1)  # MCN_TC_AA
+        self.assertEqual((aa.req_w, aa.req_h), (1280, 720))
+        self.assertEqual((aa.src_x, aa.src_y, aa.src_w, aa.src_h), (128, 168, 1024, 384))
+        self.assertEqual(aa.scale, 0)
+        # content rectangle fits inside the frame and is VPU-aligned
+        self.assertEqual(aa.src_x % 16, 0)
+        self.assertEqual(aa.src_y % 2, 0)
+        self.assertLessEqual(aa.src_x + aa.src_w, aa.req_w)
+        self.assertLessEqual(aa.src_y + aa.src_h, aa.req_h)
+        for factor, want in ((1000, (1024, 376)), (1300, (1328, 488)), (1500, (1520, 564)),
+                             (1900, (1920, 714)), (3000, (1920, 714))):
+            z = self.geom(2, factor)  # clamped to 1900 at 3000
+            self.assertEqual((z.req_w, z.req_h), want)
+            self.assertEqual(z.req_w % 16, 0)
+            self.assertEqual(z.req_h % 2, 0)
+            self.assertLessEqual(z.req_w, 1920)
+            self.assertEqual((z.src_x, z.src_y, z.src_w, z.src_h),
+                             (0, 0, z.req_w, z.req_h))
+            self.assertEqual(z.scale, 1)
+
+    def test_scale_nv12_downscale(self):
+        # A flat NV12 frame must stay flat (every sample equals the constant), proving the
+        # bilinear taps sum to 1; a 1-D gradient must stay monotas a sanity check on direction.
+        sw, sh, dw, dh = 64, 32, 40, 20
+        sstride = sw
+        yflat = bytes([130]) * (sstride * sh)
+        cflat = bytes([90, 200]) * (sstride // 2 * (sh // 2))
+        dy = C.create_string_buffer(dw * dh)
+        dc = C.create_string_buffer(dw * dh // 2)
+        lib.mcn_scale_nv12(yflat, cflat, sstride, sw, sh, dy, dc, dw, dw, dh)
+        self.assertEqual(set(dy.raw[:dw * dh]), {130})
+        self.assertEqual(set(dc.raw[0:dw:2]), {90})    # Cb column
+        self.assertEqual(set(dc.raw[1:dw:2]), {200})   # Cr column
+        # horizontal gradient 0..63 in Y -> downscaled row still increases left to right
+        grad = bytearray()
+        for _ in range(sh):
+            grad += bytes(range(sw))
+        lib.mcn_scale_nv12(bytes(grad), cflat, sstride, sw, sh, dy, dc, dw, dw, dh)
+        row = list(dy.raw[:dw])
+        self.assertEqual(row, sorted(row))
+        self.assertLess(row[0], row[-1])
+
+    def test_yuy2_to_nv12(self):
+        # 4x2 YUY2 -> NV12: Y interleaved per pixel, Cb/Cr from even rows, 2x2 subsampled.
+        w, h, ys, ds = 4, 2, 8, 4
+        row = bytes([10, 100, 20, 200]) * (w // 2)  # Y0=10,U=100,Y1=20,V=200 repeated
+        yuy2 = row + bytes([30, 101, 40, 201]) * (w // 2)
+        dy = C.create_string_buffer(ds * h)
+        dc = C.create_string_buffer(ds * (h // 2))
+        lib.mcn_yuy2_to_nv12(yuy2, ys, w, h, dy, dc, ds)
+        self.assertEqual(list(dy.raw[0:4]), [10, 20, 10, 20])   # row0 luma
+        self.assertEqual(list(dy.raw[4:8]), [30, 40, 30, 40])   # row1 luma
+        self.assertEqual(list(dc.raw[0:4]), [100, 200, 100, 200])  # Cb,Cr from row0 only
+
+    def test_aa_cluster_discovery_bytes(self):
+        aa = self.geom(1)
+        out = C.create_string_buffer(256)
+        n = lib.mcn_aa_sdr(out, len(out), 5, 6, C.byref(aa))
+        self.assertGreater(n, 0)
+        services = self.pb(out.raw[:n])
+        self.assertEqual(len(services[1]), 2)  # two Service entries, both field 1
+        video, inp = (self.pb(s) for s in services[1])
+        self.assertEqual(self.v(video[1]), 5)         # video channel id
+        ms = self.pb(video[3][0])
+        self.assertEqual(self.v(ms[1]), 3)            # available_type = VIDEO
+        self.assertEqual(self.v(ms[6]), 1)            # display_id
+        self.assertEqual(self.v(ms[7]), 1)            # display_type = CLUSTER
+        vc = self.pb(ms[4][0])
+        self.assertEqual([self.v(vc[k]) for k in (1, 2, 3, 4)], [2, 2, 256, 336])  # res,fps,margins
+        self.assertEqual(self.v(inp[1]), 6)           # input channel id
+        iss = self.pb(inp[4][0])
+        self.assertEqual(self.v(iss[5]), 1)           # input display_id
+        keys = self.varints(iss[1][0])
+        self.assertEqual(keys, [23, 65536])
+        self.assertEqual(lib.mcn_aa_sdr(out, len(out), 5, 6, C.byref(self.geom(2, 1500))), 0)
+
+    def test_now_playing_from_pps(self):
+        pps = ('@nowplaying\nPlaybackStatus::Playing\nMediaItemTitle::Песня: часть 1\r\n'
+               'MediaItemArtist::Группа\nMediaItemTitleX::no\n-MediaItemAlbumTitle\n').encode()
+        self.assertEqual(self.media(pps),
+                         'media=1\ntitle=Песня: часть 1\nartist=Группа\nalbum=\n')
+        self.assertEqual(self.media(b'@nowplaying\nMediaItemArtist::A\n'), 0)
+        self.assertEqual(self.media(b'MediaItemTitle::T\nMediaItemAlbumTitle::B'),
+                         'media=1\ntitle=T\nartist=\nalbum=B\n')
+        self.assertEqual(self.media(b'MediaItemTitle::T\n', 12), -1)
+        title = self.media(('MediaItemTitle::' + 'я' * 150 + '\n').encode()).split('\n')[1]
+        self.assertEqual(title, 'title=' + 'я' * 99)
+
+    def test_now_playing_pause_stop_and_deleted_attributes(self):
+        # The driver writes "PlaybackStatus::<name>" (Stopped, Playing, Paused, SeekForward,
+        # SeekBackward, Unknown); only a paused or stopped track leaves the cluster.
+        track = b'@nowplaying\nMediaItemTitle::T\nMediaItemArtist::A\n'
+        for status, shown in ((b'Playing', True), (b'Paused', False), (b'Stopped', False),
+                              (b'SeekForward', True), (b'Unknown', True)):
+            text = self.media(track + b'PlaybackStatus::' + status + b'\n')
+            self.assertEqual(text != 0, shown, status)
+        self.assertNotEqual(self.media(track), 0)  # no status yet: the title is shown
+        # PPS deletions: "-name" removes the attribute, an unrelated "-x" is ignored.
+        self.assertEqual(self.media(track + b'-MediaItemTitle\n'), 0)
+        self.assertEqual(self.media(track + b'-MediaItemArtist\n-x\n-\n'),
+                         'media=1\ntitle=T\nartist=\nalbum=\n')
+        self.assertNotEqual(self.media(track + b'PlaybackStatus::Paused\n-PlaybackStatus\n'), 0)
+        self.assertEqual(self.media(track + b'-MediaItemTitleX\n'),
+                         'media=1\ntitle=T\nartist=A\nalbum=\n')
+
+    def test_silence_without_teardown_ends_guidance_and_resumes(self):
+        # Phone gone without a TEARDOWN (or mm-ipod dead): no status for MCN_RG_SILENT_MS.
+        self.accept(self.maneuver())
+        self.status(now=1000)
+        self.assertEqual(self.snapshot(1000 + 119999)['type'], '2')
+        self.assertEqual(self.snapshot(1000 + 120000), {'active': '0'})
+        # A real status brings it back with the cached maneuver: silence never clears the route.
+        self.status(now=200000)
+        self.assertEqual(self.snapshot(200001)['type'], '2')
+
+    def test_passed_waits_for_the_new_maneuver(self):
+        # A status may name an index whose 0x5202 is not cached yet; the street line must not
+        # change until it is known whether that index is the same maneuver (Yandex Maps style).
+        self.yandex(31, 2, 'Первая ул.')
+        self.current(31, 10)
+        self.assertEqual(self.current(32, 900), '')
+        self.yandex(32, 2, 'Первая ул.')                # the same turn under a new index
+        self.assertEqual(self.current(32, 800), '')
+        self.current(32, 10)
+        self.assertEqual(self.current(33, 700), '')      # 33 unknown: no decision yet
+        self.yandex(33, 14, 'Вторая пл.')                # a different maneuver: 31/32 passed
+        self.assertEqual(self.snapshot()['street'], 'Первая ул.')
+        # A reroute before the new maneuver arrives is no pass.
+        self.current(33, 10)
+        self.assertEqual(self.current(34, 500), 'Первая ул.')
+        self.accept(msg(0x5201, num(1, 5, 1)))
+        self.yandex(34, 47, 'Третья ул.')
+        self.assertEqual(self.snapshot()['street'], 'Первая ул.')
+
+    @staticmethod
+    def stock_like_cfg():
+        # Synthetic stand-in for the unit's iap2.cfg (no vendor content): the same layout as the
+        # P0480T template and the runtime copy SAL writes from it. Comment lines before each
+        # section, sections commented out with ';[...]', a non-ASCII byte in a comment,
+        # [nowplaying] disabled with long lists, no [ident], [commands] last.
+        return ('# accessory\n[accessory]\nname=A\nmodel=B\nserial=S1\n\n'
+                '# transport\n[transport]\nname=T\nid=1\n\n'
+                '[applaunch]\nenable=no\n\n'
+                '# bt: mac\n;[bluetooth]\n;enable=yes\n;id=2\n\n'
+                ';[devaudio]\n;enable=yes\n;rates=32000\n\n'
+                '# media\n[medialib]\nenable=no\nsyncbufsize=1\n\n'
+                '# metadata: Track attributes to be published.\n'
+                '# playback: Playback state attributes to be published.\n'
+                '[nowplaying]\nenable=no\nmetadata=Title,PlaybackDurationInMilliseconds,'
+                'AlbumTitle,Artist,ArtworkFileTransferIdentifier\n'
+                'playback=Status,ElapsedTimeInMilliseconds,AppName\n\n'
+                '# location\n[location]\ntypes=GPGGA\nname=L\nid=3\n\n'
+                '[eap]\nprotocol=x.y,match=0\nenable=yes\nmaxbufsize=1\n\n'
+                '[power]\nenable=yes\n\n[communications]\nenable=yes\nlists=no\n\n'
+                ';[vehicle]\n;enable=yes\n\n;[hid]\n;component=name::K,function::0\n\n'
+                '# set the API(s) to \u2019no\u2019.\n[commands]\n'
+                'iap2_nowplay_set=no\niap2_x=no\n').encode()
+
+    def test_cfg_on_stock_like_template(self):
+        data = self.stock_like_cfg()
+        out = C.create_string_buffer(8192)
+        n = lib.mcn_route_config(data, len(data), out, len(out))
+        self.assertGreater(n, 0)
+        text = out.raw[:n]
+        # Only [nowplaying]'s three keys change; [ident] is added once, at the end.
+        np = (b'[nowplaying]\nenable=yes\nmetadata=Title,Artist,AlbumTitle\n'
+              b'playback=Status\n\n')
+        self.assertEqual(text, data.replace(data[data.index(b'[nowplaying]'):
+                                                 data.index(b'# location')], np)
+                         + b'[ident]\nsendmsgs=0x5200,0x5203\nrecvmsgs=0x5201,0x5202,0x5204\n')
+        # Commented sections and the [commands] API switches stay as they were.
+        self.assertIn(b';[bluetooth]\n;enable=yes\n', text)
+        self.assertIn(b'iap2_nowplay_set=no\n', text)
+        # Idempotent: SAL's next copy of an already rewritten file gives the same result.
+        n2 = lib.mcn_route_config(text, len(text), out, len(out))
+        self.assertEqual(out.raw[:n2], text)
+        # SAL may reorder keys and switch sections (runtime copy): only values move.
+        moved = data.replace(b'[applaunch]\nenable=no', b'[applaunch]\nenable=yes')
+        n = lib.mcn_route_config(moved, len(moved), out, len(out))
+        self.assertIn(b'[applaunch]\nenable=yes\n', out.raw[:n])
+        self.assertEqual(out.raw[:n].count(b'[ident]'), 1)
+
+
+lib.mcn_aa_turn.argtypes = [C.c_void_p, C.c_char_p, C.c_uint, C.c_int, C.c_int, C.c_int, C.c_int]
+lib.mcn_aa_copy.argtypes = [C.c_void_p, C.c_uint, C.c_char_p, C.c_uint]
+lib.mcn_aa_media_text.argtypes = [C.c_char_p, C.c_char_p, C.c_char_p, C.c_void_p, C.c_uint]
+
+
+class AndroidAutoCheck(unittest.TestCase):
+    """common/aa.c and the AA discovery bytes: what Android Auto sends PhoneLink."""
+    LEFT, RIGHT, UNSPECIFIED = 1, 2, 3
+
+    def setUp(self):
+        self.state = C.create_string_buffer(2048)
+        lib.mcn_aa_reset(self.state)
+
+    def turn(self, road, side, event, number=-1, angle=-1):
+        road = road.encode()
+        lib.mcn_aa_turn(self.state, road, len(road), side, event, number, angle)
+
+    def snap(self):
+        out = C.create_string_buffer(4096)
+        n = lib.mcn_aa_text(self.state, out, len(out))
+        self.assertGreater(n, 0)
+        return dict(l.split('=', 1) for l in out.raw[:n].decode().splitlines())
+
+    def test_distance_is_always_sent(self):
+        self.assertEqual(self.snap(), {'active': '0'})
+        lib.mcn_aa_status(self.state, 1)
+        self.turn('Первая ул.', self.LEFT, 4)                     # TURN LEFT, no distance yet
+        self.assertEqual(self.snap(), {'active': '1', 'lht': '0', 'street': '', 'type': '1',
+                                       'dist': '-1', 'step': '0'})
+        lib.mcn_aa_distance(self.state, 300)
+        lib.mcn_aa_distance(self.state, 120)
+        self.assertEqual((self.snap()['dist'], self.snap()['step']), ('120', '300'))
+        lib.mcn_aa_distance(self.state, 30)
+        self.turn('Вторая ул.', self.RIGHT, 3)                    # passed within 50 m
+        snap = self.snap()
+        self.assertEqual((snap['street'], snap['type'], snap['dist']), ('Первая ул.', '50', '-1'))
+        lib.mcn_aa_status(self.state, 2)
+        self.assertEqual(self.snap(), {'active': '0'})
+
+    def test_traffic_side_is_never_guessed(self):
+        lib.mcn_aa_status(self.state, 1)
+        self.turn('', self.LEFT, 11)                               # ROUNDABOUT_ENTER, side left
+        self.assertEqual((self.snap()['lht'], self.snap()['type']), ('0', '6'))
+        self.turn('', self.LEFT, 13, 3)                            # exit 3, no angle
+        snap = self.snap()
+        self.assertEqual((snap['lht'], snap['type']), ('0', '30'))
+        self.assertNotIn('angle', snap)
+
+    def test_roundabout_exit_direction_from_turn_angle(self):
+        lib.mcn_aa_status(self.state, 1)
+        for travelled, number, angle in ((90, 1, '90'), (270, 3, '-90'), (45, 1, '135'),
+                                         (359, 4, '-179')):
+            self.turn('', self.UNSPECIFIED, 13, number, travelled)
+            snap = self.snap()
+            self.assertEqual((snap['type'], snap.get('angle')), (str(27 + number), angle))
+        self.turn('', self.UNSPECIFIED, 13, 2, 180)                # ahead: the exit number decides
+        self.assertNotIn('angle', self.snap())
+        self.turn('', self.UNSPECIFIED, 13, -1, 90)                # no exit number: entering only
+        self.assertEqual(self.snap()['type'], '6')
+
+    def test_angle_only_where_the_picture_uses_it(self):
+        lib.mcn_aa_status(self.state, 1)
+        cases = ((self.UNSPECIFIED, 6, '4', None),   # U-turn without side: HMI default (left)
+                 (self.LEFT, 6, '4', '-180'), (self.RIGHT, 6, '4', '180'),
+                 (self.LEFT, 1, '11', None),         # DEPART: no U-turn picture from the side
+                 (self.RIGHT, 14, '3', None), (self.LEFT, 7, '9', '-45'),
+                 (self.UNSPECIFIED, 7, '9', '45'), (self.LEFT, 19, '24', None))
+        for side, event, kind, angle in cases:
+            self.turn('', side, event)
+            snap = self.snap()
+            self.assertEqual((snap['type'], snap.get('angle')), (kind, angle), (side, event))
+        self.turn('', self.LEFT, 0)                                # UNKNOWN: no picture
+        self.assertNotIn('type', self.snap())
+
+    def test_road_is_one_safe_line(self):
+        lib.mcn_aa_status(self.state, 1)
+        lib.mcn_aa_distance(self.state, 10)
+        self.turn('A\nactive=0\rB', self.LEFT, 4)
+        lib.mcn_aa_distance(self.state, 10)
+        self.turn('я' * 200, self.RIGHT, 4)                        # 400 bytes: cut on a character
+        snap = self.snap()
+        self.assertEqual((snap['active'], snap['street']), ('1', 'A active=0 B'))
+        out = C.create_string_buffer(8)
+        lib.mcn_aa_copy(out, 6, 'яяя'.encode(), 6)
+        self.assertEqual(out.value.decode(), 'яя')
+        lib.mcn_aa_copy(out, 6, None, 5)
+        self.assertEqual(out.value, b'')
+
+    def media(self, title, artist='', album='', size=4096):
+        out = C.create_string_buffer(size)
+        n = lib.mcn_aa_media_text(title.encode(), artist.encode(), album.encode(), out, size)
+        return n if n <= 0 else out.raw[:n].decode()
+
+    def test_now_playing_is_marked_android_auto(self):
+        self.assertEqual(self.media('Песня', 'Группа', 'Альбом'),
+                         'media=1\ntitle=Песня\nartist=Группа\nalbum=Альбом\nsrc=aa\n')
+        self.assertEqual(self.media('', 'A'), 0)
+        self.assertEqual(self.media('T', size=20), -1)
+
+    def test_discovery_without_input_id(self):
+        g = Geom()
+        self.assertEqual(lib.mcn_geom(1, 1000, C.byref(g)), 0)
+        out = C.create_string_buffer(256)
+        n = lib.mcn_aa_sdr(out, len(out), 5, -1, C.byref(g))
+        services = RouteCheck.pb(out.raw[:n])[1]
+        self.assertEqual(len(services), 1)
+        self.assertEqual(RouteCheck.v(RouteCheck.pb(services[0])[1]), 5)
 
 
 if __name__ == '__main__':

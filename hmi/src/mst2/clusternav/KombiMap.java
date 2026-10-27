@@ -35,7 +35,7 @@ final class KombiMap {
     static void phoneVideo(boolean video) {
         long now = System.currentTimeMillis();
 
-        if (video && (!hidden || now - sentMs >= RESEND_MS)) {
+        if (video && (!hidden || PhoneLink.expired(sentMs, now, RESEND_MS))) {
             if (!hidden) {
                 Activator.log("built-in cluster map hidden");
             }

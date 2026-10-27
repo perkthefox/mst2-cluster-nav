@@ -1,7 +1,7 @@
 # CarPlay maneuvers on the cluster
 
 `hmi/src/mst2/clusternav/Maneuvers.java` turns a CarPlay route-guidance maneuver into the
-cluster's BAP ManeuverDescriptor; `hmi/check.sh` checks the table on the host.
+cluster's BAP ManeuverDescriptor; `hmi/check.sh` checks all 54 types for right- and left-hand traffic on the host.
 
 **BAP direction** (byte, counter-clockwise): 0 ahead, 32 slight left, 64 left, 96 sharp left,
 128 back, 160 sharp right, 192 right, 224 slight right — 64/192/224/32 verified on the cluster firmware in mQbEMU

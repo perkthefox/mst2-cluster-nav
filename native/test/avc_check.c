@@ -21,6 +21,10 @@ int main(void)
                                        0, 0, 0, 1, 0x65, 0x11, 0, 0, 0, 1, 0x06};
     static const uint8_t want_p[] = {0, 0, 0, 1, 0x41, 0x22, 0x33};
     static const uint8_t bad[] = {0, 0, 0, 9, 0x41};
+    static const uint8_t bad_pps[] = {1, 100, 0, 31, 0xfd, 0xe1, 0, 3, 0x67, 0x11, 0x22,
+                                      1, 0, 5, 0x68};
+    static const uint8_t len3[] = {1, 100, 0, 31, 0xfe, 0xe1, 0, 3, 0x67, 0x11, 0x22,
+                                   1, 0, 2, 0x68, 0xcc};
     struct avc a = {0};
     uint8_t out[64];
     int key;
@@ -35,6 +39,14 @@ int main(void)
     assert(avc_annexb(&a, bad, sizeof(bad), out, sizeof(out), &key) == 0);
     assert(avc_annexb(&a, idr, sizeof(idr), out, 10, &key) == 0); /* does not fit */
     assert(!avc_config(&a, cfg, 9) && a.ps_len == 13);              /* truncated keeps old */
+    /* A failure after the SPS was parsed (PPS cut short), with 2-byte lengths and another SPS,
+     * and lengthSizeMinusOne = 2 (3-byte lengths, not allowed): both leave everything as it was. */
+    assert(!avc_config(&a, bad_pps, sizeof(bad_pps)));
+    assert(a.len_size == 4 && a.ps_len == 13 && !memcmp(a.ps, want_idr, 13));
+    assert(!avc_config(&a, len3, sizeof(len3)));
+    assert(a.len_size == 4 && a.ps_len == 13 && !memcmp(a.ps, want_idr, 13));
+    n = avc_annexb(&a, idr, sizeof(idr), out, sizeof(out), &key);
+    assert(key && n == sizeof(want_idr) && !memcmp(out, want_idr, n));
     puts("avc: ok");
     return 0;
 }

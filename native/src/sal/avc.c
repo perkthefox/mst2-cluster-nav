@@ -19,13 +19,14 @@ static void put_start(uint8_t *out)
 
 int avc_config(struct avc *a, const uint8_t *p, unsigned n)
 {
+    struct avc c; /* parsed here, kept only when the whole record is valid */
     unsigned pos = 6, len = 0, set, count, i, size;
 
     if (n < 7 || p[0] != 1) {
         return 0;
     }
-    a->len_size = (p[4] & 3u) + 1;
-    if (a->len_size == 3) {
+    c.len_size = (p[4] & 3u) + 1;
+    if (c.len_size == 3) {
         return 0;
     }
     /* Two lists: the SPS count sits in p[5], the PPS count in the byte after the SPS. */
@@ -36,12 +37,12 @@ int avc_config(struct avc *a, const uint8_t *p, unsigned n)
             }
             size = (unsigned)p[pos] << 8 | p[pos + 1];
             pos += 2;
-            if (!size || pos + size > n || len + 4 + size > sizeof(a->ps)) {
+            if (!size || pos + size > n || len + 4 + size > sizeof(c.ps)) {
                 return 0;
             }
-            put_start(a->ps + len);
+            put_start(c.ps + len);
             for (unsigned k = 0; k < size; k++) {
-                a->ps[len + 4 + k] = p[pos + k];
+                c.ps[len + 4 + k] = p[pos + k];
             }
             len += 4 + size;
             pos += size;
@@ -53,8 +54,15 @@ int avc_config(struct avc *a, const uint8_t *p, unsigned n)
             count = p[pos++];
         }
     }
+    if (!len) {
+        return 0;
+    }
+    for (i = 0; i < len; i++) {
+        a->ps[i] = c.ps[i];
+    }
     a->ps_len = len;
-    return len != 0;
+    a->len_size = c.len_size;
+    return 1;
 }
 
 unsigned avc_annexb(const struct avc *a, const uint8_t *in, unsigned n, uint8_t *out,

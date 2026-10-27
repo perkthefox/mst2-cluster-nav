@@ -79,6 +79,16 @@ void mcn_link_send(const char *text)
     (void)text;
 }
 
+/* Android Auto (sal/gal.c) is not part of this check. */
+void mcn_gal_tick(unsigned now)
+{
+    (void)now;
+}
+
+void mcn_gal_video_tick(void)
+{
+}
+
 /* SAL's own environment from cpu.conf: the stock preload, then ours. */
 char *mcn_test_getenv(const char *name)
 {

@@ -71,6 +71,8 @@ const char *mcn_cluster_url(void);
  */
 #define MCN_CLUSTER_KBPS 10000
 
+/* GEM "Native arrows only": no phone (CarPlay or Android Auto) is offered the cluster screen. */
+int mcn_arrows_only(void);
 /* All plug-in functions the receiver needs resolve: only then is the cluster offered. */
 int mcn_stream_ready(void);
 /* Address family of the phone's connection, for the listener (as the stock 110 one). */
@@ -78,6 +80,8 @@ int mcn_peer_family(void *session);
 /* Returns the data port, or -1. Stops a previous stream first. */
 int mcn_stream_start(void *session, const uint8_t key[16], uint64_t connection_id, int family);
 void mcn_stream_stop(void);
+/* The receivers' lock (stream.c), from mcn_init before any thread starts. */
+void mcn_stream_init(void);
 /* A phone's cluster stream is set up (its receiver runs). */
 int mcn_stream_live(void);
 /* The shared memory of include/mcn_video.h, created on first use; NULL if that fails. */
@@ -96,5 +100,18 @@ void mcn_route_session(int up);
 #define MCN_KEY_FILE MCN_DIR "/keyframe"
 #define MCN_DISPLAY_FILE MCN_DIR "/display"
 #define MCN_RATE_FILE MCN_DIR "/kbps"
+/*
+ * CarPlay zoom-out factor x1000 (MCN_ZOOM_FILE, "1000".."1900"): 1000 = off, the phone encodes
+ * 1010x376 and stream.c forwards it 1:1; above that the phone is offered a proportionally bigger
+ * alt screen (so it draws more map) and the stream is re-encoded down to 1010x376 (sal/vpu.c).
+ */
+#define MCN_ZOOM_FILE MCN_DIR "/zoom"
+/*
+ * Zoom factor x1000 of the session: the one the last /info advertised (latched there), so the
+ * receiver decodes exactly the screen size the phone was offered; 1000 when off.
+ */
+int mcn_cluster_zoom(void);
+/* The transcoder's lock (sal/vpu.c), from mcn_init before any thread starts. */
+void mcn_vpu_init(void);
 
 #endif

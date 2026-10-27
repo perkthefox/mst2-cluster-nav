@@ -20,11 +20,12 @@ final class Guidance {
 
     boolean active;
     int mainElement;
-    /* Exit / turn angle, 0..255; the scale is calibrated in mQbEMU (docs/ARCHITECTURE.md). */
+    /* Exit / turn angle, 0..255; the scale is calibrated in mQbEMU (docs/MANEUVERS.md). */
     int direction;
     /* One character per side street, same encoding as direction. */
     String sideStreets = "";
-    int distanceToManeuver;
+    /* Metres; -1 unknown (BAP NavSD shows no distance for 0 or less). */
+    int distanceToManeuver = -1;
     boolean showBargraph;
     /* 0..100, how much of the approach to the maneuver is left. */
     int bargraph;

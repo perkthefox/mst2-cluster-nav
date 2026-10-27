@@ -11,12 +11,17 @@
  * opcode 1 = avcC configuration (clear), 0 = one access unit, encrypted by one AES-CTR stream
  * that runs over all opcode-0 bodies, others are keep-alives. Access units go to the shared
  * memory of include/mcn_video.h as Annex-B; DisplayManager's hook sends them to the cluster.
+ * One receiver owns that memory at a time (owner, under lock): one that ends late, after a newer
+ * one took over, neither publishes nor clears what its successor shows.
  */
 #include "sal.h"
 #include "avc.h"
 #include "mcn_video.h"
+#include "mcn_transcode.h"
 
 #define BODY_MAX (1u << 20)
+/* Transcoder input: the largest body as Annex-B, plus the SPS/PPS put in front of an IDR. */
+#define TBUF_MAX (BODY_MAX + sizeof(((struct avc *)0)->ps))
 #define OP_FRAME 0
 #define OP_CONFIG 1
 #define KEY_GAP_MS 2000
@@ -42,10 +47,12 @@ struct rx {
     volatile int fd;
     pthread_t thread;
     void *session;
-    unsigned char aes[512] __attribute__((aligned(8))); /* AES_CTR_Context, 0x118 bytes in 210.81 */
+    /* AES_CTR_Context: 0x11c bytes in 210.81 (AES_CTR_Final, support.so 0x15e48, clears 0x11c). */
+    unsigned char aes[512] __attribute__((aligned(8)));
     struct avc avc;
     int need_idr;
     unsigned told_ms; /* last "video=1" to the HMI bundle */
+    int told;         /* "video=1" was sent and not yet taken back */
     unsigned key_ms;  /* last key frame from the phone, or the last time we asked for one */
     unsigned key_period_ms;
     unsigned asked_ms; /* last forceKeyFrame sent */
@@ -54,6 +61,11 @@ struct rx {
     unsigned budget_ms; /* last refill */
     long budget;        /* bytes that may be read now */
     uint8_t *body;
+    struct mcn_geom zoom; /* CarPlay zoom-out: re-encode the phone's bigger frame to 1010x376 */
+    unsigned vpu;         /* the transcoder's owner token, 0 when forwarding 1:1 */
+    int dead;             /* zoom-out without a transcoder: nothing shown, the cluster is stock */
+    int want_key;         /* the transcoder's decoder wants the phone's next key frame */
+    uint8_t *tbuf;        /* Annex-B scratch fed to the transcoder, TBUF_MAX */
 };
 
 static OSStatus (*p_socket_open)(int, int, int, int, int *, int, int *);
@@ -65,6 +77,14 @@ static OSStatus (*p_send_command)(void *, CFDictionaryRef, void *, void *);
 static OSStatus (*p_set_qos)(int, int);
 static struct mcn_video *video;
 static struct rx *current;
+/* The receiver that owns the shared memory; its writes to it happen under lock. */
+static pthread_mutex_t lock;
+static struct rx *owner;
+
+void mcn_stream_init(void)
+{
+    pthread_mutex_init(&lock, NULL);
+}
 
 /*
  * The session fields read here (peer family at +0x49, server configuration at +0xc, its QoS
@@ -237,16 +257,30 @@ static void command(struct rx *rx, const char *type, const char *url)
 /*
  * While the phone's connection is open: the connection is alive for DisplayManager (alive_ms),
  * and, once a frame came, for the HMI bundle ("video=1" each second, PhoneLink), frames or not.
+ * Not while the mod is switched off or a zoom-out has no transcoder: then the connection is
+ * given up at once (alive_ms 0, "video=0") and DisplayManager shows the stock map, while the
+ * socket is still read so the plug-in's session goes on undisturbed.
  */
 static void connection_tick(struct rx *rx)
 {
     unsigned now = mcn_now_ms();
 
-    video->alive_ms = now ? now : 1;
-    if (video->write_seq && now - rx->told_ms >= 1000 && mcn_active()) {
-        rx->told_ms = now;
-        mcn_link_send("video=1");
+    pthread_mutex_lock(&lock);
+    if (owner == rx && !rx->stop) {
+        if (mcn_active() && !rx->dead) {
+            video->alive_ms = now ? now : 1;
+            if (video->write_seq && now - rx->told_ms >= 1000) {
+                rx->told_ms = now;
+                rx->told = 1;
+                mcn_link_send("video=1");
+            }
+        } else if (rx->told || video->alive_ms) {
+            rx->told = 0;
+            video->alive_ms = 0;
+            mcn_link_send("video=0");
+        }
     }
+    pthread_mutex_unlock(&lock);
 }
 
 /* Waits until fd has data; 0 once the stream is being stopped (TEARDOWN must not hang). */
@@ -373,6 +407,7 @@ static void publish(struct rx *rx, const uint8_t *au, unsigned n)
     slot->pts_us = (unsigned long long)mcn_now_ms() * 1000u;
     __sync_synchronize();
     slot->seq = seq;
+    __sync_synchronize(); /* the slot is complete before the reader can see it as the newest */
     video->write_seq = seq;
     video->last_frame_ms = mcn_now_ms();
     if (idr) {
@@ -394,12 +429,60 @@ static void publish(struct rx *rx, const uint8_t *au, unsigned n)
     mcn_video_wake(video);
 }
 
+/*
+ * Zoom-out: the phone's access unit into the transcoder. A unit lost or too big, and every one
+ * after it until the next key frame, is not fed (the decoder would show garbage) and the phone
+ * is asked for a key frame; so it is when the decoder lost its place. Only the transcoder's
+ * encoder answers DisplayManager's want_idr.
+ */
+static void transcode(struct rx *rx, unsigned size)
+{
+    int idr;
+    unsigned n = avc_annexb(&rx->avc, rx->body, size, rx->tbuf, TBUF_MAX, &idr);
+
+    if (!n || (rx->need_idr && !idr)) {
+        rx->need_idr = 1;
+        rx->want_key = 1;
+        return;
+    }
+    rx->need_idr = 0;
+    if (idr) {
+        rx->keys++;
+    }
+    mcn_vpu_feed(rx->vpu, rx->tbuf, n);
+    switch (mcn_vpu_poll(rx->vpu)) {
+    case -1:
+        rx->dead = 1; /* gave up (logged by the transcoder): the cluster goes back to stock */
+        break;
+    case 1:
+        rx->want_key = 1;
+        break;
+    default:
+        break;
+    }
+}
+
+/* One decrypted access unit: published (or transcoded) only while this receiver may show it. */
+static void frame(struct rx *rx, unsigned size)
+{
+    pthread_mutex_lock(&lock);
+    if (owner != rx || rx->stop || rx->dead || !mcn_active()) {
+        rx->need_idr = 1; /* if it is shown again, from a key frame */
+    } else if (rx->vpu) {
+        transcode(rx, size);
+    } else {
+        publish(rx, rx->body, size);
+    }
+    pthread_mutex_unlock(&lock);
+}
+
 static void rx_free(struct rx *rx)
 {
     if (rx->fd >= 0) {
         close(rx->fd);
     }
     p_ctr_final(rx->aes);
+    free(rx->tbuf);
     free(rx->body);
     free(rx);
 }
@@ -423,14 +506,35 @@ static void receive_stream(struct rx *rx)
     rx->budget = (long)rx->kbps / 8 * BURST_MS;
     snprintf(line, sizeof(line), "cluster stream: budget %u kbit/s", rx->kbps);
     mcn_log(line);
-    video->generation++;
+    /* Take the shared memory over: a receiver that ends late leaves it alone from now on. The
+     * sequence restarts before the generation changes, so a reader that sees the new
+     * generation never sees the old stream's sequence with it. */
+    pthread_mutex_lock(&lock);
+    owner = rx;
     video->write_seq = 0;
+    __sync_synchronize();
+    video->generation++;
+    pthread_mutex_unlock(&lock);
+    mcn_busy(1);
     /*
      * The plug-in has no scene policy for a second screen: ask for the cluster scene now, not
      * after the first frame, in case the phone waits for it before it sends any.
      */
     command(rx, "showUI", mcn_cluster_url());
-    mcn_busy(1);
+    /*
+     * Zoom-out: the phone was offered a bigger screen (sal.c); re-encode its stream down to
+     * 1010x376. Its stream is encoded at that bigger size, which the cluster's decoder does not
+     * take, so without a transcoder nothing is shown and the cluster stays stock. The phone
+     * starts its stream with a key frame; the transcoder's encoder makes its own key frames on
+     * DisplayManager's want_idr, and the phone is asked for one only when the decoder needs it.
+     */
+    if (rx->zoom.mode == MCN_TC_CARPLAY_ZOOM) {
+        rx->tbuf = malloc(TBUF_MAX);
+        rx->vpu = rx->tbuf ? mcn_vpu_open(&rx->zoom, video) : 0;
+        rx->dead = !rx->vpu;
+        mcn_log(rx->vpu ? "cluster stream: zoom-out transcoder started"
+                        : "cluster stream: zoom-out transcoder unavailable, cluster stays stock");
+    }
     while (read_full(rx, &h, sizeof(h))) {
         mcn_busy_tick();
         if (h.size > BODY_MAX || !read_full(rx, rx->body, h.size)) {
@@ -445,15 +549,22 @@ static void receive_stream(struct rx *rx)
             if (p_ctr_update(rx->aes, rx->body, h.size, rx->body)) {
                 break;
             }
-            publish(rx, rx->body, h.size);
+            frame(rx, h.size);
         }
         /*
          * DisplayManager raises want_idr on every frame while it waits for a key frame; one
          * forceKeyFrame per KEY_GAP_MS is enough, as each key frame starts about a second of
-         * refining P-frames that load USB and MOST (car, 2026-10-26).
+         * refining P-frames that load USB and MOST (car, 2026-10-26). With the transcoder, its
+         * encoder answers want_idr, and the phone is asked only when the decoder lost its place
+         * (want_key), never on a timer: each request restarts the phone's encoder.
          */
-        if (video->want_idr && !rx->stop && mcn_now_ms() - rx->asked_ms >= KEY_GAP_MS) {
-            video->want_idr = 0;
+        if (!rx->stop && !rx->dead && (rx->vpu ? rx->want_key : video->want_idr) &&
+            mcn_now_ms() - rx->asked_ms >= KEY_GAP_MS) {
+            if (rx->vpu) {
+                rx->want_key = 0;
+            } else {
+                video->want_idr = 0;
+            }
             rx->asked_ms = mcn_now_ms();
             rx->asked++;
             command(rx, "forceKeyFrame", NULL);
@@ -461,10 +572,17 @@ static void receive_stream(struct rx *rx)
         stats(rx, h.opcode == OP_FRAME ? h.size : 0);
     }
     mcn_log("cluster stream: ended");
-    video->alive_ms = 0;
-    video->last_frame_ms = 0;
-    mcn_video_wake(video);
-    mcn_link_send("video=0");
+    mcn_vpu_close(rx->vpu); /* here, not on the plug-in's thread; a stale token is a no-op */
+    pthread_mutex_lock(&lock);
+    if (owner == rx) {
+        /* Still ours: no newer receiver took over, so the cluster goes back to stock. */
+        owner = NULL;
+        video->alive_ms = 0;
+        video->last_frame_ms = 0;
+        mcn_video_wake(video);
+        mcn_link_send("video=0");
+    }
+    pthread_mutex_unlock(&lock);
     mcn_busy(0);
 }
 
@@ -505,6 +623,13 @@ int mcn_stream_start(void *session, const uint8_t key[16], uint64_t connection_i
     rx->need_idr = 1;
     rx->key_period_ms = key_period();
     rx->kbps = rate_kbps();
+    {
+        int zoom = mcn_cluster_zoom();
+
+        if (zoom > 1000) {
+            mcn_geom(MCN_TC_CARPLAY_ZOOM, zoom, &rx->zoom);
+        }
+    }
     rx->body = malloc(BODY_MAX);
     p_derive(key, 16, connection_id, k, iv);
     if (!rx->body || p_ctr_init(rx->aes, k, iv)) {
@@ -548,8 +673,10 @@ void mcn_stream_stop(void)
     current = NULL;
     rx->stop = 1;
     /*
-     * The thread sees stop within 250 ms unless it is inside the plug-in's SendCommand. Called
-     * from TEARDOWN on the plug-in's thread, so never wait for it without a limit.
+     * The thread sees stop within 250 ms, unless it is inside a VPU call of the zoom-out
+     * transcoder (bounded by the VPU's timeouts, seconds) or a SendCommand, which only queues
+     * the request (HTTPClientSendMessage, 210.81) and returns. Called from TEARDOWN on the
+     * plug-in's thread, so never wait for it without a limit.
      */
     for (i = 0; i < 300 && rx->state == RX_RUNNING; i++) {
         usleep(10000);

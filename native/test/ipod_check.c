@@ -33,16 +33,19 @@ void *mcn_test_dlsym(void *handle, const char *name)
     return executable && strstr(executable, "mm-ipod") ? (void *)1 : NULL;
 }
 
-static int busy, guarded;
+static int busy, busy_calls, guarded;
 
 void mcn_guard_init(void)
 {
     guarded++;
 }
 
+/* Pairs only: the guard counts nested brackets (common/hook.c). */
 void mcn_busy(int on)
 {
-    busy = on;
+    busy += on ? 1 : -1;
+    busy_calls++;
+    CHECK(busy >= 0 && busy <= 1);
 }
 
 int mcn_active(void)
@@ -82,7 +85,9 @@ int main(void)
     executable = "/usr/sbin/mm-ipod\n";
     mcn_init();
     CHECK(loads == 1 && guarded == 1);
-    CHECK(!busy); /* missing driver: a clean end, not a suspected crash */
+    /* Busy only around patching: a missing driver is a clean end, and mm-ipod exiting later
+     * (phone gone before identification, a device without iAP2) is no suspected crash. */
+    CHECK(!busy && busy_calls == 2);
     enabled = 0;
     mcn_init();
     CHECK(loads == 1);
@@ -91,6 +96,6 @@ int main(void)
     mcn_init();
     CHECK(loads == 1);
     puts("ipod: message group 0x52, executable gate, disabled, unrecognized "
-         "executable/missing driver fallback: ok");
+         "executable/missing driver fallback, busy only while patching: ok");
     return 0;
 }

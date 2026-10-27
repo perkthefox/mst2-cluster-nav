@@ -9,62 +9,86 @@ CARD=$(mcn_card) || { echo "Aborted: no SD card with custom/mst2-cluster-nav."; 
 SRC=$CARD/custom/mst2-cluster-nav
 mcn_check_unit $SRC/preload.list || exit 1
 
-# Outside our own block, which names the patch's jar in its guard.
-if mcn_strip_block $HMI_SH | grep -q 'NavActiveIgnore.jar'; then
+if mcn_navignore_lines > /dev/null; then
   echo "Aborted: the toolbox 'dual navigation' patch (NavActiveIgnore.jar) is installed."
   echo "It replaces stock HMI classes and conflicts with this mod. Disable it first:"
   echo "Customization -> Navigation -> Disable dual navigation, then reboot."
+  echo "Found in $HMI_SH, with $NAVIGNORE_JAR present:"
+  mcn_navignore_lines
   exit 1
 fi
 
+# From Install on, cpu.conf preloads the libraries on every boot, before the HMI and its guard
+# start: one that cannot be loaded resets the unit in a loop. So every file is checked against
+# the package's MANIFEST before anything is changed.
+if ! mcn_verify_card $SRC; then
+  echo "Aborted: the package on the card is incomplete or damaged; nothing was changed."
+  exit 1
+fi
+
+# Stock copies, on the unit and, so that they survive a unit whose HMI no longer starts, on the
+# card. While the mod is not registered they are taken again from the current files (a firmware
+# update may have replaced them), with any part of the mod left elsewhere stripped.
 mkdir -p $MCN/backup
-mcn_put $SRC/mst2-cluster-nav.jar $MCN/mst2-cluster-nav.jar 644 || { echo "Aborted: copy failed."; exit 1; }
+if ! mcn_installed && ! { mcn_backup runHMI.sh $HMI_SH mcn_strip_block &&
+    mcn_backup bundles.properties $BUNDLES mcn_bundles_remove &&
+    mcn_backup cpu.conf $CPU_CONF mcn_unpreload_conf; }; then
+  echo "Aborted: could not back up the stock files to $MCN/backup; nothing was changed."
+  exit 1
+fi
+if ! mcn_backup_card $CARD/mst2-cluster-nav-backup; then
+  echo "Aborted: could not copy the stock files to $CARD/mst2-cluster-nav-backup/"
+  echo "(card full or write-protected?); nothing was changed."
+  exit 1
+fi
+echo "Stock files backed up to $CARD/mst2-cluster-nav-backup/ (keep this copy)."
+
+# All files are copied under a new name and compared first; only then do they all take their
+# names, so a failed copy leaves the previous version complete.
+LIBS=$(awk '!/^#/ && NF == 2 { print $2 }' $SRC/preload.list)
 mcn_mount_rw
 mkdir -p $LIBDIR
-for lib in $(awk '!/^#/ && NF == 2 { print $2 }' $SRC/preload.list); do
-  if ! mcn_put $SRC/$lib $LIBDIR/$lib 755; then
-    mcn_mount_ro
-    echo "Aborted: $lib could not be copied intact; cpu.conf is unchanged."
-    exit 1
-  fi
+ok=1
+mcn_put $SRC/mst2-cluster-nav.jar $MCN/mst2-cluster-nav.jar 644 || ok=0
+for lib in $LIBS; do
+  [ $ok = 1 ] && { mcn_put $SRC/$lib $LIBDIR/$lib 755 || ok=0; }
+done
+if [ $ok = 1 ]; then
+  mcn_put_commit $MCN/mst2-cluster-nav.jar
+  for lib in $LIBS; do
+    mcn_put_commit $LIBDIR/$lib
+  done
+fi
+rm -f $MCN/mst2-cluster-nav.jar.new
+for lib in $LIBS; do
+  rm -f $LIBDIR/$lib.new
 done
 mcn_mount_ro
-[ -e $MCN/mode ] || echo auto > $MCN/mode
-
-if ! mcn_installed; then
-  # Stock copies before the first change: on the unit and, so that they survive a unit whose
-  # HMI no longer starts, on the toolbox card. Nothing is changed unless all three exist.
-  [ -e $MCN/backup/runHMI.sh ] || cp -p $HMI_SH $MCN/backup/runHMI.sh
-  [ -e $MCN/backup/bundles.properties ] || cp -p $BUNDLES $MCN/backup/bundles.properties
-  [ -e $MCN/backup/cpu.conf ] || cp -p $CPU_CONF $MCN/backup/cpu.conf
-  for f in runHMI.sh bundles.properties cpu.conf; do
-    if [ ! -s $MCN/backup/$f ]; then
-      echo "Aborted: could not back up $f; nothing was changed."
-      exit 1
-    fi
-  done
-  mkdir -p $CARD/mst2-cluster-nav-backup &&
-    cp -p $MCN/backup/runHMI.sh $MCN/backup/bundles.properties $MCN/backup/cpu.conf \
-      $CARD/mst2-cluster-nav-backup/ &&
-    echo "Stock files backed up to $CARD/mst2-cluster-nav-backup/ (keep this copy)."
-fi
-mcn_mount_rw
-# The jar goes to the END of the boot class path, after the stock line that defines it.
-mcn_rewrite $HMI_SH mcn_hmi_with_block $SRC/runHMI.block
-mcn_rewrite $BUNDLES mcn_bundles_with_block $SRC/bundles.block
-mcn_rewrite $CPU_CONF mcn_conf_with_preload $SRC/preload.list
-mcn_mount_ro
-if ! mcn_installed || ! grep -q "Lateload = .*,$BUNDLE_ID" $BUNDLES ||
-    ! grep -q "$LIBDIR/" $CPU_CONF; then
-  echo "Registration failed; restoring the stock files."
-  mcn_mount_rw
-  mcn_rewrite $HMI_SH cat $MCN/backup/runHMI.sh
-  mcn_rewrite $BUNDLES cat $MCN/backup/bundles.properties
-  mcn_rewrite $CPU_CONF cat $MCN/backup/cpu.conf
-  mcn_mount_ro
+if [ $ok != 1 ]; then
+  echo "Aborted: the files could not be copied intact (unit storage full?); the stock files"
+  echo "are unchanged."
   exit 1
 fi
-rm -f $MCN/off-reason
+[ -e $MCN/mode ] || echo auto > $MCN/mode
+
+mcn_mount_rw
+# The jar goes to the END of the boot class path, after the stock line that defines it.
+mcn_rewrite $HMI_SH mcn_strip_block mcn_hmi_with_block $SRC/runHMI.block &&
+  mcn_rewrite $BUNDLES mcn_bundles_remove mcn_bundles_with_block $SRC/bundles.block &&
+  mcn_rewrite $CPU_CONF mcn_unpreload_conf mcn_conf_with_preload $SRC/preload.list
+mcn_mount_ro
+if ! mcn_installed || ! grep -q "^Bundle\.Startup\.Lateload = .*,$BUNDLE_ID\$" $BUNDLES ||
+    ! grep -q "$LIBDIR/" $CPU_CONF; then
+  echo "Registration failed; taking the mod out of the stock files again."
+  mcn_mount_rw
+  mcn_remove_all
+  mcn_mount_ro
+  if grep -q 'mst2-cluster-nav' $HMI_SH $BUNDLES $CPU_CONF; then
+    echo "Not every trace could be removed: the stock copies are in $MCN/backup and on the card."
+  fi
+  exit 1
+fi
+rm -f $MCN/off-reason $MCN/hmi-busy $MCN/hmi-strikes
 for c in sal dm ipod; do
   rm -f $MCN/off-$c $MCN/strikes-$c $MCN/busy-$c
 done

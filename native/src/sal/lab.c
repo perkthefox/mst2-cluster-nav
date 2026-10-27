@@ -71,6 +71,7 @@ static void put(struct mcn_video *video, unsigned u)
     slot->pts_us = (unsigned long long)mcn_now_ms() * 1000u;
     __sync_synchronize();
     slot->seq = seq;
+    __sync_synchronize(); /* the slot is complete before the reader can see it as the newest */
     video->write_seq = seq;
     video->last_frame_ms = mcn_now_ms();
     video->alive_ms = video->last_frame_ms; /* the recording's "connection" is open while it plays */
@@ -88,8 +89,9 @@ static void *play(void *arg)
     if (!video) {
         return NULL;
     }
-    video->generation++;
     video->write_seq = 0;
+    __sync_synchronize(); /* as stream.c: the sequence restarts before the generation changes */
+    video->generation++;
     mcn_log("lab video: playing");
     for (;;) {
         if (!mcn_active() || mcn_stream_live()) {

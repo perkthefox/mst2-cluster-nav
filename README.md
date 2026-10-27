@@ -54,11 +54,44 @@ stays away.
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+### 🎵 Now playing on the cluster
+The track playing on the phone — title, artist, album — in the cluster's media view, instead of
+just "Apple CarPlay". Hidden when you pause.
+
+</td>
+<td valign="top">
+
+### 🤝 Built-in navigation first
+Start the car's own navigation and its arrows stay on the cluster: the phone never overwrites
+them and never wipes them when it stops guiding.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🤖 Android Auto too
+Native arrows, now playing and the map on the cluster for Android Auto — through endpoints the
+unit's own Android Auto library has but never offers the phone.
+
+</td>
+<td valign="top">
+
+### 🔭 More map around the car
+Optional CarPlay zoom-out (1.25× / 1.5×): the phone draws a bigger cluster map, and the unit's
+own video hardware brings it back to the cluster's size.
+
+</td>
+</tr>
 </table>
 
 ## 🚀 Why it's different
 
-> **Nothing is re-encoded. Nothing of the firmware is replaced.**
+> **Nothing is re-encoded. Nothing of the firmware is replaced.** (Only the optional zoom-out and
+> Android Auto's map are re-encoded — on the unit's own video hardware.)
 
 - 🎞️ **Straight into the stock video path.** The phone's H.264 enters right after the unit's own
   encoder. The stock MPEG-TS packer, the ring buffer, the J5 and MOST carry it to the cluster at
@@ -88,11 +121,12 @@ Whatever happens, the unit falls back to stock — never to a black screen.
 | | |
 |---|---|
 | 🧪 **Trial boot** | After every install the mod loads **once**. Only you make it permanent. |
-| 💾 **SD-card kill switch** | A card with an empty file `mst2-cluster-nav-disable` keeps the mod out before the HMI starts and turns every hook off within two seconds. |
-| 🩺 **Self-repair guard** | Runs before every HMI start; a missing library, an HMI restart before the mod settled, or a conflicting patch — and the mod takes itself out, telling you why. |
+| 💾 **SD-card kill switch** | A card with an empty file `mst2-cluster-nav-disable` keeps the mod out before the HMI starts and turns every part off within two seconds — hooks and HMI bundle alike. |
+| ✅ **Checked package** | Install verifies every file on the card against the package's manifest and refuses a damaged copy before anything on the unit is touched. |
+| 🩺 **Self-repair guard** | Runs before every HMI start; a missing or broken library, an HMI that restarts or a unit that resets before the mod settled, or a conflicting patch — and the mod takes itself out, telling you why. |
 | 💥 **Crash guards** | Every native part notices if it took its process down and switches itself off. |
 | 🔍 **Build checks** | On any firmware build the mod was not verified on, it changes nothing and stays stock. |
-| 📝 **Atomic edits + backups** | Three text lines are touched, written atomically, with stock copies on the unit **and** on your card. Uninstall restores them byte for byte. |
+| 📝 **Atomic edits + backups** | Three text files get a marked addition each, written atomically and checked line by line, with stock copies on the unit **and** on your card. Uninstall restores them byte for byte. |
 
 ## 🔧 How it works
 
@@ -134,25 +168,27 @@ Deep dive: [architecture](docs/ARCHITECTURE.md) · [maneuvers](docs/MANEUVERS.md
 |---|---|
 | 🚗 **Head unit** | MIB2 Standard (TechniSat/Preh), **navigation** build. Verified on `MST2_EU_SK_ZR_P0480T`, HMI `H29.319.120`; the installer refuses other HMI builds. Reference car: Škoda, `5Q0035874C`. |
 | 🖥️ **Cluster** | Continental Active Info Display 10.25" (`5E0920790A`). |
-| ⚙️ **Coding** | CarPlay on. For the phone map: the cluster map over MOST on (as for the built-in navigation's map). Arrows and lanes work without it. |
+| ⚙️ **Coding** | CarPlay on. For the phone map: the cluster map over MOST on (as for the built-in navigation's map); arrows and lanes work without it. For now playing: App-Connect on. For Android Auto: Android Auto on. |
 | 📱 **Phone** | iPhone with CarPlay and a navigation app that supports the instrument cluster — Apple Maps, Google Maps, Yandex Maps, … |
 | 🧰 **Tools** | **MIB STD2 Toolbox** installed on the unit. |
 
 ## 📦 Install
 
 **1. Get the package** — download `mst2-cluster-nav-<version>.zip` from
-[Releases](../../releases/latest), or build it yourself:
+[Releases](../../releases/latest), or build it yourself from a clean checkout:
 
 ```sh
 MIBHMI=<MIBHMI.jar from your unit's MIBHMI.jxe> JAVAC=<JDK 8 javac> ./package.sh
 ```
 
 Building needs clang and ld.lld (no QNX SDK) and JDK 8; the HMI part is compiled against your own
-unit's HMI, converted from its `MIBHMI.jxe` to a jar. Neither the package nor the repository
+unit's HMI, converted from its `MIBHMI.jxe` to a jar. `package.sh` runs all checks first and
+writes `build/mst2-cluster-nav-<version>.zip` (the same bytes for the same commit; `FORCE=1`
+builds from uncommitted changes, for testing only). Neither the package nor the repository
 contains vendor files.
 
-**2. Copy** the package's `custom/` (or `build/sd/custom/`) onto the Toolbox SD card, merging it
-with the Toolbox's `custom/`.
+**2. Copy** the package's `custom/` onto the Toolbox SD card, merging it with the Toolbox's
+`custom/`.
 
 **3. Import the menu** — Green Engineering Menu → MIB STD2 Toolbox → Customization → GreenMenu →
 **Copy custom Green Engineering Menu screens and scripts to unit**, then reopen the menu.
@@ -169,13 +205,13 @@ The mod loads once. All good? → **Enable permanently**.
 
 | Item | Effect |
 |---|---|
-| Auto / Phone map / Native arrows only | Offer the cluster screen to the phone, or keep native arrows only. |
+| Auto / Native arrows only | Offer the cluster screen to the phone (its map when the app provides one, otherwise native arrows), or keep native arrows only. |
 | 30 / 25 / 20 / 10 fps | Frame rate offered to the phone (25 by default: about what the cluster's MOST channel carries of a moving map) — lower it if the cluster video stutters. |
-| Key frame every 2 s / every second | Faster recovery if the picture breaks up. |
+| Key frame only when needed / every 2 s / every second | Only when needed by default; a fixed period recovers faster if the picture breaks up. |
 | Map only / with the app's maneuver card | Map, route and car (default), or the app's own cluster UI. |
 | Own size and safe area | Calibrate from `mst2-cluster-nav-display.txt` on the card: `width_mm height_mm x y w h`. |
-| Demo guidance | See the arrows in a parked car, no phone needed. |
-| Status / Save diagnostics | State and the last reason for switching off; a log for the card after a drive. |
+| Zoom-out off / 1.25x / 1.5x | More CarPlay map around the car on the cluster (off by default). |
+| Status / Save diagnostics | State, settings and the last reason for switching off; logs for the card after a drive. The diagnostics contain your route, phone and network details — share them with care. |
 | Uninstall | Restores the stock files — reboot afterwards. |
 
 Changes apply from the next CarPlay connection or reboot, as the menu says.
@@ -197,8 +233,8 @@ Changes apply from the next CarPlay connection or reboot, as the menu says.
 <details>
 <summary><b>❓ FAQ</b></summary>
 
-**Does it change my firmware?** No file of the firmware is replaced. Three lines in three text
-files are added and removed again on Uninstall, byte for byte.
+**Does it change my firmware?** No file of the firmware is replaced. Three text files get a
+marked addition, removed again on Uninstall, byte for byte.
 
 **What if something goes wrong on the road?** The cluster falls back to the stock map or arrows on
 its own. For a full stop, insert the card with `mst2-cluster-nav-disable`.
@@ -206,7 +242,8 @@ its own. For a full stop, insert the card with `mst2-cluster-nav-disable`.
 **Do I need the cluster map coded?** Only for the phone's map. Native arrows and lanes work on any
 coding with CarPlay.
 
-**Android Auto?** Not yet — it's on the [roadmap](docs/ROADMAP.md).
+**Android Auto?** Yes, since 1.1: native arrows, now playing and the map on the cluster, with no
+settings of their own ("Native arrows only" keeps the map off for both phones).
 
 </details>
 

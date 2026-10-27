@@ -60,15 +60,17 @@ public final class LanesCheck {
             "unknown position");
         check(guidance("lanes=1\nlane0=0,nonsense,0\n").lanes.length == 0,
             "malformed field");
-        if (args.length > 0 && new File(args[0]).isFile()) {
-            Guidance nativeSnapshot = PhoneLink.parse(Replay.read(args[0]));
-            check(nativeSnapshot.lanes.length == 3, "native to HMI lane count");
-            check(nativeSnapshot.lanes[2].getLaneDirection() == 192
-                && nativeSnapshot.lanes[2].getGuidanceInfo() == 2
-                && nativeSnapshot.lanes[2].getLaneSideStreets().length == 1,
-                "native to HMI highlight and side exit");
-            System.out.println("lanes: native snapshot -> PhoneLink -> NavBAP interface: ok");
+        if (args.length == 0 || !new File(args[0]).isFile()) {
+            throw new RuntimeException("native lane snapshot missing (run native/check.sh first): "
+                + (args.length > 0 ? args[0] : "no path"));
         }
+        Guidance nativeSnapshot = PhoneLink.parse(Replay.read(args[0]));
+        check(nativeSnapshot.lanes.length == 3, "native to HMI lane count");
+        check(nativeSnapshot.lanes[2].getLaneDirection() == 192
+            && nativeSnapshot.lanes[2].getGuidanceInfo() == 2
+            && nativeSnapshot.lanes[2].getLaneSideStreets().length == 1,
+            "native to HMI highlight and side exit");
+        System.out.println("lanes: native snapshot -> PhoneLink -> NavBAP interface: ok");
         System.out.println("lanes: mapping, sorting, unknowns, hide and malformed batches: ok");
     }
 }

@@ -67,7 +67,7 @@ Without a highlight, a lane with one distinct direction keeps its recommendation
 several directions and no reliable highlight gets none, so that no arbitrarily chosen exit is lit,
 while its directions stay visible.
 
-End of route, arrival, hiding by the phone, an unknown current index, 5 s without a status and
+End of route, arrival, hiding by the phone, an unknown current index, 120 s without a status and
 switching the mod off clear the lanes. The stock API is called on the ASL thread.
 
 ## Checks

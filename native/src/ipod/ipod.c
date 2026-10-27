@@ -108,8 +108,11 @@ static int build(void *dev, void *packet)
 {
     uint8_t payload[128];
     unsigned n;
-    int fd, result = location(dev, packet);
+    int fd, result;
 
+    /* Crash guard: busy only while an identification is built (see mcn_init). */
+    mcn_busy(1);
+    result = location(dev, packet);
     if (result < 0 || !mcn_active()) {
         goto done;
     }
@@ -135,31 +138,18 @@ static int build(void *dev, void *packet)
     }
     mcn_log("identification: route guidance group 30 offered");
 done:
-    /* The first identification is built: everything this library does has run once. */
     mcn_busy(0);
     return result;
 }
 
-MCN_EXPORT void mcn_init(void)
+/* Checks the driver build and wraps the Location builder and the receive entry. */
+static void patch(void)
 {
     void *driver, *module, *blob;
     uintptr_t base;
     uint32_t *slot, *recv;
     struct mcn_msg_group *table;
 
-    /* /bin/on inherits the preload too; only mm-ipod may load the driver. */
-    if (!mcn_active() || !is_ipod()) {
-        return;
-    }
-    /* Crash guard (common/hook.c): busy from here until the first identification is
-     * built. mm-ipod dying in between, twice in a row, turns these hooks off until the
-     * next Install; SAL then still starts it, with this library inert.
-     */
-    mcn_guard_init();
-    if (!mcn_active()) {
-        return;
-    }
-    mcn_busy(1);
     mcn_log("iAP2 hooks loaded");
     /* Load once, before mm-ipod's iface_find can start identification. Its later dlopen
      * reuses this mapping. Polling a builder table from a worker would race the phone.
@@ -169,21 +159,18 @@ MCN_EXPORT void mcn_init(void)
     blob = driver ? dlsym(driver, "packet_addparam_blob") : NULL;
     if (!module || !blob || (uintptr_t)module < 0x2d7d8) {
         mcn_log("iAP2 driver unavailable: stock behaviour");
-        mcn_busy(0);
         return;
     }
     base = (uintptr_t)module - 0x2d7d8;
     if ((uintptr_t)blob != base + 0x20c9c ||
         (uintptr_t)dlsym(driver, "ident_info_funcs") != base + 0xafc08) {
         mcn_log("iAP2 driver build mismatch: no data changed");
-        mcn_busy(0);
         return;
     }
     slot = (uint32_t *)(base + 0xafcb8);
     table = dlsym(driver, "iap2_ctrl_msg_table");
     if (slot[0] != 0x16 || slot[1] != base + 0xea08 || (uintptr_t)table != base + 0xb2fc0) {
         mcn_log("iAP2 Location slot mismatch: no data changed");
-        mcn_busy(0);
         return;
     }
     /* Without the 0x52 row every route message leaks a receive packet (see route_msgs):
@@ -191,7 +178,6 @@ MCN_EXPORT void mcn_init(void)
      */
     if (mcn_route_msg_group(&table[0x52]) < 0) {
         mcn_log("iAP2 message group 0x52 not empty: no data changed");
-        mcn_busy(0);
         return;
     }
     location = (void *)(uintptr_t)slot[1];
@@ -206,4 +192,30 @@ MCN_EXPORT void mcn_init(void)
     } else {
         mcn_log("iAP2 receive entry mismatch: stock reception");
     }
+}
+
+MCN_EXPORT void mcn_init(void)
+{
+    /* /bin/on inherits the preload too; only mm-ipod may load the driver. */
+    if (!mcn_active() || !is_ipod()) {
+        return;
+    }
+    /*
+     * Crash guard (common/hook.c): busy only around our own risky work, patch() and each
+     * identification build (build). mm-ipod dying inside, twice in a row, turns these hooks
+     * off until the next Install; SAL then still starts it, with this library inert. A plain
+     * exit outside them is no strike. The driver's own exits (P0480T) are "Does not support
+     * iAP2, exiting." in transport_recv_pkt (0x261fc: a USB device that never speaks iAP2) and
+     * the seventh rejection in link_handle_iap2pkt (0x16034); both lie on the receive path,
+     * outside the builders, which only ident_info_request runs (called from 0x15fc8, 0x1604c),
+     * and the Location builder 0xea08 calls no exit. The receive wrapper is not bracketed: it
+     * runs per USB transfer and exit(0) above is reached through it.
+     */
+    mcn_guard_init();
+    if (!mcn_active()) {
+        return;
+    }
+    mcn_busy(1);
+    patch();
+    mcn_busy(0);
 }

@@ -4,43 +4,69 @@
  */
 package mst2.clusternav;
 
+import java.io.File;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 
 /**
- * Guidance from SAL (CarPlay route guidance decoded from the stock iAP2 log; Android Auto
- * navigation status is planned): one UDP datagram on 127.0.0.1 per update, UTF-8 text, one
+ * Guidance from SAL (CarPlay route guidance decoded from the stock iAP2 log, Android Auto's
+ * navigation status from its session): one UDP datagram on 127.0.0.1 per update, UTF-8 text, one
  * "key=value" per line:
  *
  *   active=1           0 ends guidance
- *   type=2             iAP2 maneuver type 0..53
+ *   type=2             iAP2 maneuver type 0..53 (Android Auto's maneuvers are mapped onto them)
  *   angle=90           exit angle, degrees, negative = left (absent: unknown)
  *   lht=0              1 for left-hand traffic
  *   roads=-90,0,90     junction road angles (side streets)
- *   dist=250           metres to the maneuver
+ *   dist=250           metres to the maneuver, -1 unknown
  *   step=400           metres from the previous maneuver (for the approach bar)
  *   street=Main St     road the car is on (the app's, else the one the last maneuver led onto)
- *   rtt=900            seconds to the destination
- *   dest=12000         metres to the destination
+ *   rtt=900            seconds to the destination, -1 unknown (CarPlay only)
+ *   dest=12000         metres to the destination, -1 unknown (CarPlay only)
+ *
+ * Unknown values are never shown as zero: a missing dist is -1 like a sent one.
  *
  * SAL also sends "video=1" about once a second while the phone's cluster stream connection is
- * open (frames or not: a still map sends none), and "video=0" when it closes; that datagram
- * carries nothing else. While either the video or the
- * guidance is alive the phone owns the cluster (ClusterCarPlay).
+ * open (CarPlay or Android Auto; frames or not: a still map sends none), and "video=0" when it
+ * closes; that datagram carries nothing else. While either the video or the guidance is alive
+ * the phone owns the cluster (ClusterCarPlay).
+ *
+ * The phone's track comes once a second while it plays, "media=1" with "title=", "artist=",
+ * "album=" lines and "src=aa" for Android Auto (absent: CarPlay), and "media=0" when it ends
+ * (NowPlaying).
  *
  * Silence for GUIDANCE_TIMEOUT_MS also ends guidance, and for VIDEO_TIMEOUT_MS the video, so a
- * dead phone or process cannot leave the cluster to it.
+ * dead phone or process cannot leave the cluster to it. J9 Foundation 1.1 has no nanoTime, so
+ * the timeouts use the wall clock and take a clock that jumps (either way) as expired.
+ *
+ * The same thread checks the SD-card kill switch every KILL_CHECK_MS, as the native hooks do:
+ * while a card carries the file, nothing of the phone (or a replay) reaches the cluster.
  */
 final class PhoneLink implements Runnable {
     static final int PORT = 39750;
     private static final int GUIDANCE_TIMEOUT_MS = 5000;
     private static final int VIDEO_TIMEOUT_MS = 3000;
+    private static final int KILL_CHECK_MS = 2000;
+    private static final String KILL_FILE = "/mst2-cluster-nav-disable";
+
+    private static volatile boolean off;
 
     private volatile boolean running = true;
     private DatagramSocket socket;
     private boolean active, video;
-    private long guidanceMs, videoMs;
+    private long guidanceMs, videoMs, killMs;
+
+    /** The SD-card kill switch was found on the last check. */
+    static boolean switchedOff() {
+        return off;
+    }
+
+    /** A wall-clock timeout; a negative or oversized delta (clock set) counts as expired. */
+    static boolean expired(long since, long now, long limit) {
+        long d = now - since;
+        return d < 0 || d >= limit;
+    }
 
     void stop() {
         running = false;
@@ -54,6 +80,7 @@ final class PhoneLink implements Runnable {
             socket = new DatagramSocket(PORT, InetAddress.getByName("127.0.0.1"));
             socket.setSoTimeout(1000);
             byte[] buf = new byte[4096];
+            killMs = System.currentTimeMillis() - KILL_CHECK_MS;
             while (running) {
                 DatagramPacket p = new DatagramPacket(buf, buf.length);
                 try {
@@ -63,15 +90,20 @@ final class PhoneLink implements Runnable {
                     /* checked below */
                 }
                 long now = System.currentTimeMillis();
-                if (active && now - guidanceMs > GUIDANCE_TIMEOUT_MS) {
+                if (expired(killMs, now, KILL_CHECK_MS)) {
+                    killMs = now;
+                    checkKillSwitch();
+                }
+                if (active && expired(guidanceMs, now, GUIDANCE_TIMEOUT_MS)) {
                     Datapool.publish(Guidance.inactive());
                     active = false;
                 }
-                if (video && now - videoMs > VIDEO_TIMEOUT_MS) {
+                if (video && expired(videoMs, now, VIDEO_TIMEOUT_MS)) {
                     video = false;
                 }
-                ClusterCarPlay.setPhoneOwnsCluster(active || video);
-                KombiMap.phoneVideo(video);
+                ClusterCarPlay.setPhoneOwnsCluster(!off && (active || video));
+                KombiMap.phoneVideo(!off && video);
+                NowPlaying.tick(now);
             }
         } catch (Throwable t) {
             if (running) {
@@ -83,15 +115,45 @@ final class PhoneLink implements Runnable {
         }
         ClusterCarPlay.setPhoneOwnsCluster(false);
         KombiMap.phoneVideo(false);
+        NowPlaying.clear();
+    }
+
+    private void checkKillSwitch() {
+        boolean found = false;
+        for (int i = 0; i < 10 && !found; i++) {
+            found = new File("/media/mp00" + i + KILL_FILE).exists();
+        }
+        if (found == off) {
+            return;
+        }
+        off = found;
+        Activator.log(found ? "kill switch on a card: phone kept off the cluster"
+                            : "kill switch removed: phone back on the cluster");
+        if (found) {
+            /* Datapool turns everything inactive now, once (only if we had written guidance). */
+            Datapool.publish(Guidance.inactive());
+            NowPlaying.clear();
+        }
     }
 
     private void received(String text) {
+        if (text.startsWith("media=")) {
+            if (!off) {
+                NowPlaying.received(text);
+            }
+            return;
+        }
         if (text.startsWith("video=")) {
             video = text.startsWith("video=1");
             videoMs = System.currentTimeMillis();
             return;
         }
+        if (!text.startsWith("active=") && text.indexOf("\nactive=") < 0) {
+            /* Not a guidance snapshot (every one carries active=): never taken as "inactive". */
+            return;
+        }
         Guidance g = parse(text);
+        /* Datapool writes only on our own edges and never over the built-in navigation. */
         Datapool.publish(g);
         active = g.active;
         guidanceMs = System.currentTimeMillis();

@@ -1,5 +1,5 @@
 /*
- * P0480T CarPlay source: spawn boundary, raw iAP2 client and diagnostic hex tail.
+ * P0480T CarPlay source: spawn boundary, raw iAP2 client, diagnostic hex tail, now playing.
  * Copyright (c) 2026 Anton Perk. CC BY-NC-SA 4.0, see LICENSE and NOTICE.
  * ABI: phone-route-guidance.md E28, E31-E34; QNX 6.5 libc spawn() reference.
  * The stock cfg is copied to RAM with extra ident IDs; only the child's config argument
@@ -8,6 +8,7 @@
 #include "mcn_qnx.h"
 #include "mcn_hook.h"
 #include "mcn_route.h"
+#include "mcn_transcode.h"
 
 #define CLIENT   "libiap2client.so.1"
 #define CFG      "/tsd/var/sal/carplay/iap2.cfg"
@@ -224,6 +225,20 @@ MCN_EXPORT int spawn(const char *path, int fd_count, const int *fd_map,
     return result;
 }
 
+/* One read: a PPS object without ?wait gives its whole state per read() call. */
+static int read_media(char *buf, unsigned bufsize, char *out, unsigned size)
+{
+    int fd = open(MCN_MEDIA_PPS, O_RDONLY);
+    ssize_t n;
+
+    if (fd < 0) {
+        return 0;
+    }
+    n = read(fd, buf, bufsize);
+    close(fd);
+    return n > 0 ? mcn_media_text(buf, (unsigned)n, out, size) : 0;
+}
+
 static void *route_worker(void *unused)
 {
     struct mcn_route *r = malloc(sizeof(*r));
@@ -233,8 +248,8 @@ static void *route_worker(void *unused)
     void *(*connect_client)(const char *, int) = NULL;
     int (*disconnect_client)(void *) = NULL;
     int (*raw_send)(void *, const void *, unsigned) = NULL;
-    unsigned generation = ~0u, last_send = 0, attempts = 0, last_publish = 0;
-    int received = 0, was_active = 0, previous_up = 0, guidance_owned = 0;
+    unsigned generation = ~0u, last_send = 0, attempts = 0, last_publish = 0, last_media = 0;
+    int received = 0, was_active = 0, previous_up = 0, guidance_owned = 0, media_owned = 0;
     off_t offset = 0;
 
     (void)unused;
@@ -260,8 +275,6 @@ static void *route_worker(void *unused)
         memcpy(path, client_path, sizeof(path));
         unlock();
         if (gen != generation || active != was_active) {
-            int relaunched = gen != generation;
-
             generation = gen;
             received = attempts = 0;
             last_send = now - 2000;
@@ -271,9 +284,21 @@ static void *route_worker(void *unused)
                 mcn_link_send("active=0\n");
                 guidance_owned = 0;
             }
-            /* A spawn begins a fresh log. A switch change skips disabled traffic. */
+            if (media_owned) {
+                mcn_link_send("media=0");
+                media_owned = 0;
+            }
+            /*
+             * Start at the end, after a spawn too: the new mm-ipod truncates the log only when
+             * it parses -l (fopen "w+", ipod_main 0x103fd4), so reading from 0 here could replay
+             * the old session. Nothing is lost: its fopen comes before the driver is even
+             * initialised (0x1042a8), the phone sends 0x52xx only after our 0x5200, and that
+             * goes out only after this loop has read on from here, once SETUP and the new
+             * READY mark (written by the new driver's identification) are both there. A log
+             * that shrinks below this offset is still seen as truncated below.
+             */
             fd = open(LOG, O_RDONLY);
-            offset = !relaunched && fd >= 0 ? lseek(fd, 0, SEEK_END) : 0;
+            offset = fd >= 0 ? lseek(fd, 0, SEEK_END) : 0;
             if (fd >= 0) {
                 close(fd);
             }
@@ -285,6 +310,10 @@ static void *route_worker(void *unused)
             if (guidance_owned) {
                 mcn_link_send("active=0\n");
                 guidance_owned = 0;
+            }
+            if (media_owned) {
+                mcn_link_send("media=0");
+                media_owned = 0;
             }
         }
         previous_up = up;
@@ -391,6 +420,24 @@ static void *route_worker(void *unused)
                 guidance_owned = owns;
                 last_publish = now;
             }
+            /* Now playing, once a second while CarPlay is up: PhoneLink times it out. */
+            if (up && now - last_media >= 1000) {
+                int n = read_media(chunk, sizeof(chunk), out, MCN_RG_SNAPSHOT);
+
+                last_media = now;
+                if (n > 0) {
+                    if (!media_owned) {
+                        mcn_log("now playing: first track from the phone");
+                    }
+                    mcn_link_send(out);
+                    media_owned = 1;
+                } else if (media_owned) {
+                    mcn_link_send("media=0");
+                    media_owned = 0;
+                }
+            }
+            mcn_gal_tick(now);
+            mcn_gal_video_tick();
         }
         usleep(200000);
     }

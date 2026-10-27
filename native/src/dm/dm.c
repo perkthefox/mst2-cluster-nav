@@ -61,7 +61,6 @@
 #define RING_REPORT_MS 10000
 
 MCN_HOOK(mmfbq_get_and_wait, LIB);
-MCN_HOOK(mmfbq_get, LIB);
 MCN_HOOK(mmfbq_done, LIB);
 
 /* An element as the reader reads it: data at +4, size at +8; the queue links at +0x18, +0x1c. */
@@ -91,24 +90,43 @@ static int most_sink = -1; /* MostSink's call site checked: 1 ours, 0 another bu
 static int ring_stalled;
 static unsigned ring_waits, ring_wait_max, ring_lost, ring_report_ms;
 
+/*
+ * Plain dlsym, not MCN_REAL: that aborts on a missing name, which would take DisplayManager
+ * down (and the unit with it). A name missing here leaves the cluster video stock; the two
+ * hooks then pass through to whatever the run-time linker finds (mcn_hook_enter).
+ */
 static void resolve(void)
 {
+    static volatile int done;
+    void *lib;
     uintptr_t base;
 
-    if (real_done) {
+    if (done) {
+        __sync_synchronize(); /* another reader thread resolved: see its pointers */
         return;
     }
-    real_get_and_wait = MCN_REAL(mmfbq_get_and_wait);
-    real_get = MCN_REAL(mmfbq_get);
+    lib = dlopen(LIB, RTLD_LAZY | RTLD_GLOBAL);
+    if (lib) {
+        real_get_and_wait = dlsym(lib, "mmfbq_get_and_wait");
+        real_get = dlsym(lib, "mmfbq_get");
+        real_done = dlsym(lib, "mmfbq_done");
+    }
     base = (uintptr_t)real_get_and_wait - OMX_GET_AND_WAIT;
-    if ((uintptr_t)real_get == base + OMX_GET &&
-        (uintptr_t)MCN_REAL(mmfbq_done) == base + OMX_DONE &&
+    if (real_get_and_wait && (uintptr_t)real_get == base + OMX_GET &&
+        (uintptr_t)real_done == base + OMX_DONE &&
         *(const uint32_t *)(base + OMX_SINK_RETURN) == ARM_POP_R4_PC) {
         sink_return = base + OMX_SINK_RETURN;
     } else {
         mcn_log("libOpenMAXAL build mismatch: cluster video stays stock");
     }
-    real_done = MCN_REAL(mmfbq_done);
+    if (!real_get_and_wait) {
+        real_get_and_wait = MCN_REAL(mmfbq_get_and_wait);
+    }
+    if (!real_done) {
+        real_done = MCN_REAL(mmfbq_done);
+    }
+    __sync_synchronize();
+    done = 1;
 }
 
 static struct mcn_video *video_open(void)
@@ -189,16 +207,40 @@ static int has_nal(const uint8_t *p, uint32_t n, int type)
     return 0;
 }
 
+/*
+ * Where to start reading after a new stream or an overrun: just before the newest key frame
+ * still in the ring, else before the newest unit. The phone's first key frame is usually
+ * published before this reader notices the stream, and skipping it cost a forceKeyFrame (and
+ * its burst) on every connection: "3 key frames, 2 asked" in the first 10 s of each one in the
+ * car logs of 2026-10-26. Only the SLOTS-1 newest are looked at; the writer fills the oldest.
+ */
+static unsigned resync(unsigned head)
+{
+    unsigned s;
+
+    for (s = head; s && head - s < MCN_VIDEO_SLOTS - 1; s--) {
+        const struct mcn_video_slot *slot = &video->slot[s % MCN_VIDEO_SLOTS];
+
+        if (slot->seq == s && (slot->flags & MCN_VIDEO_IDR)) {
+            return s - 1;
+        }
+    }
+    return head ? head - 1 : 0;
+}
+
 /* The next access unit of the phone into `frame`; 0 when none is ready. */
 static uint32_t take_phone_frame(void)
 {
-    unsigned head = video->write_seq, seq, size;
+    unsigned gen = video->generation, head, seq, size, flags;
     struct mcn_video_slot *slot;
 
-    if (video->generation != generation || head - next_seq >= MCN_VIDEO_SLOTS) {
+    __sync_synchronize(); /* SAL resets write_seq before it changes the generation */
+    head = video->write_seq;
+    __sync_synchronize(); /* nothing of a slot is read before the head that covers it */
+    if (gen != generation || head - next_seq >= MCN_VIDEO_SLOTS) {
         /* New stream, or we fell behind the ring: start again at a key frame. */
-        generation = video->generation;
-        next_seq = head;
+        generation = gen;
+        next_seq = resync(head);
         need_idr = 1;
     }
     while (next_seq != head) {
@@ -208,8 +250,11 @@ static uint32_t take_phone_frame(void)
             need_idr = 1;
             continue;
         }
+        __sync_synchronize(); /* the slot's contents are read after its sequence */
         size = slot->size;
+        flags = slot->flags;
         if (size > sizeof(frame)) {
+            need_idr = 1; /* torn: overwritten while read */
             continue;
         }
         memcpy(frame, slot->data, size);
@@ -218,7 +263,7 @@ static uint32_t take_phone_frame(void)
             need_idr = 1; /* overwritten while copying */
             continue;
         }
-        if (need_idr && !(slot->flags & MCN_VIDEO_IDR)) {
+        if (need_idr && !(flags & MCN_VIDEO_IDR)) {
             video->want_idr = 1;
             continue;
         }
@@ -335,7 +380,10 @@ MCN_EXPORT int ring_acquire(void *ring, void **p, unsigned *n, int partial)
         real_acquire = mcn_hook_enter(&hook_ring);
     }
     r = real_acquire(ring, p, n, partial);
-    if (r || !phone || from != MOST_SINK_RETURN) {
+    if (from != MOST_SINK_RETURN) {
+        return r; /* other rings and writers leave MostSink's stall mark alone */
+    }
+    if (r || !phone) {
         ring_stalled = ring_stalled && !r;
         return r;
     }

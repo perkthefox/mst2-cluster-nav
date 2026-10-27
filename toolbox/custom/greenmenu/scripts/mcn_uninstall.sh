@@ -5,9 +5,7 @@
 
 echo "mst2-cluster-nav: uninstall"
 mcn_mount_rw
-mcn_rewrite $HMI_SH mcn_strip_block $HMI_SH
-mcn_rewrite $BUNDLES mcn_bundles_remove
-mcn_rewrite $CPU_CONF mcn_unpreload_conf
+mcn_remove_all
 # The libraries go only after cpu.conf no longer names them.
 grep -q 'mst2-cluster-nav/' $CPU_CONF || rm -rf $LIBDIR
 mcn_mount_ro

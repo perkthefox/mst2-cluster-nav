@@ -98,7 +98,7 @@ static int exists(const char *path)
 #define CRASH_WINDOW_S 180 /* a busy mark younger than this at start: the last run died busy */
 #define STRIKES_OFF 2
 
-static int component_off, busy_on;
+static int component_off, busy_count;
 static unsigned busy_ms;
 
 static long wall_s(void)
@@ -173,15 +173,31 @@ void mcn_guard_init(void)
     state_write("busy", 0);
 }
 
+/*
+ * Nesting-safe: several callers (SAL's CarPlay stream, Android Auto, mm-ipod's library) bracket
+ * their work in pairs; the mark is written on 0 -> 1 and cleared on 1 -> 0, an unmatched end is
+ * ignored. ponytail: the two file writes are not ordered against each other, so a 1 -> 0 racing
+ * a new 0 -> 1 may clear a fresh mark; mcn_busy_tick writes it again within a minute.
+ */
 void mcn_busy(int on)
 {
+    int n;
+
     if (on) {
-        busy_on = 1;
-        busy_ms = mcn_now_ms();
-        state_write("busy", wall_s());
-    } else if (busy_on) {
+        if (__sync_fetch_and_add(&busy_count, 1) == 0) {
+            busy_ms = mcn_now_ms();
+            state_write("busy", wall_s());
+        }
+        return;
+    }
+    do {
+        n = busy_count;
+        if (n <= 0) {
+            return;
+        }
+    } while (!__sync_bool_compare_and_swap(&busy_count, n, n - 1));
+    if (n == 1) {
         /* A clean end: earlier suspicions were not ours. */
-        busy_on = 0;
         state_write("busy", 0);
         state_write("strikes", 0);
     }
@@ -189,10 +205,43 @@ void mcn_busy(int on)
 
 void mcn_busy_tick(void)
 {
-    if (busy_on && mcn_now_ms() - busy_ms >= 60000) {
+    if (busy_count > 0 && mcn_now_ms() - busy_ms >= 60000) {
         busy_ms = mcn_now_ms();
         state_write("busy", wall_s());
     }
+}
+
+/*
+ * Whether runHMI.sh still carries the mod's block. A tool that copies an older runHMI.sh back
+ * (the MIB STD2 Toolbox's "Disable dual navigation") or a firmware update drops it while
+ * cpu.conf keeps preloading us: the mod is then off, as after Uninstall.
+ */
+static int hmi_block(void)
+{
+    static const char mark[] = "\n" MCN_HMI_BLOCK;
+    enum { KEEP = sizeof(mark) - 2, CHUNK = 512 };
+    char buf[KEEP + CHUNK];
+    int fd = open(MCN_HMI_SH, O_RDONLY), n, i, have = 1;
+
+    if (fd < 0) {
+        return 0;
+    }
+    buf[0] = '\n'; /* the marker may start the file */
+    while ((n = read(fd, buf + have, CHUNK)) > 0) {
+        have += n;
+        for (i = 0; i + KEEP + 1 <= have; i++) {
+            if (!memcmp(buf + i, mark, KEEP + 1)) {
+                close(fd);
+                return 1;
+            }
+        }
+        if (have > KEEP) {
+            memcpy(buf, buf + have - KEEP, KEEP);
+            have = KEEP;
+        }
+    }
+    close(fd);
+    return 0;
 }
 
 /* MCN_DIR/trial turned into MCN_TRIAL_MARK by the first part that sees it (mcn_hook.h). */
@@ -218,10 +267,20 @@ static int trial_boot(void)
 int mcn_active(void)
 {
     static unsigned checked_ms;
-    static int active, said = -1;
+    static int active, said = -1, registered = -1;
     unsigned now = mcn_now_ms();
 
     if (component_off) {
+        return 0;
+    }
+    if (registered < 0) {
+        registered = hmi_block();
+        if (!registered) {
+            mcn_log("off: " MCN_HMI_SH " has no mod block (uninstalled, restored by another tool "
+                    "or updated): stock behaviour");
+        }
+    }
+    if (!registered) {
         return 0;
     }
     if (said < 0 || now - checked_ms >= 2000) {

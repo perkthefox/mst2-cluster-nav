@@ -15,6 +15,7 @@
  * The stock plug-in skips type 111 ("Unsupported stream type") and has none of these keys.
  */
 #include "sal.h"
+#include "mcn_transcode.h"
 
 MCN_HOOK(AirPlayCopyServerInfo, AIRPLAY_LIB);
 MCN_HOOK(AirPlayReceiverSessionSetSecurityInfo, AIRPLAY_LIB);
@@ -161,6 +162,31 @@ static struct geometry cluster_geometry(void)
     return g;
 }
 
+/* The zoom /info advertised last (sal.h); read from MCN_ZOOM_FILE only there. */
+static volatile int session_zoom = 1000;
+
+int mcn_cluster_zoom(void)
+{
+    return session_zoom;
+}
+
+/* MCN_ZOOM_FILE; 1000 (off) when absent or out of 1000..1900 (the i.MX6 VPU width). */
+static int zoom_file(void)
+{
+    char text[16] = { 0 };
+    int fd = open(MCN_ZOOM_FILE, O_RDONLY), v = 0, i;
+
+    if (fd < 0) {
+        return 1000;
+    }
+    read(fd, text, sizeof(text) - 1);
+    close(fd);
+    for (i = 0; text[i] >= '0' && text[i] <= '9'; i++) {
+        v = v * 10 + (text[i] - '0');
+    }
+    return v >= 1000 && v <= 1900 ? v : 1000;
+}
+
 static CFMutableDictionaryRef cluster_display(void)
 {
     struct geometry g = cluster_geometry();
@@ -168,20 +194,40 @@ static CFMutableDictionaryRef cluster_display(void)
     CFMutableArrayRef views = cf_array_new(), properties = cf_array_new();
     CFStringRef uuid = cf_str(MCN_CLUSTER_UUID);
     CFMutableArrayRef streams = video_streams(uuid);
+    int zoom = zoom_file(), cw = MCN_CLUSTER_WIDTH, ch = MCN_CLUSTER_HEIGHT;
+
+    if (zoom > 1000) {
+        /* Offer a proportionally bigger screen; the safe area scales with it so the car marker
+         * stays put. The map comes back down to 1010x376 in sal/vpu.c. */
+        struct mcn_geom zg;
+
+        mcn_geom(MCN_TC_CARPLAY_ZOOM, zoom, &zg);
+        cw = zg.req_w;
+        ch = zg.req_h;
+        /* Scale the safe area by the real advertised ratio (cw is 16-aligned, so not exactly
+         * zoom/1000), or the car marker drifts from where the comment says it stays. */
+        g.x = g.x * cw / MCN_CLUSTER_WIDTH;
+        g.w = g.w * cw / MCN_CLUSTER_WIDTH;
+        g.y = g.y * ch / MCN_CLUSTER_HEIGHT;
+        g.h = g.h * ch / MCN_CLUSTER_HEIGHT;
+    }
+    /* The phone encodes what is offered here: the stream that follows is decoded at this size,
+     * whatever the file says by then (GEM may change it meanwhile). */
+    session_zoom = zoom;
 
     cf_dict_set(d, "uuid", uuid);
     cf_dict_set(d, "uid", uuid);
     cf_dict_set_str(d, "name", "Instrument Cluster");
     cf_array_append_str(properties, "Instrument Cluster");
     cf_dict_set(d, "properties", properties);
-    cf_dict_set_i64(d, "widthPixels", MCN_CLUSTER_WIDTH);
-    cf_dict_set_i64(d, "heightPixels", MCN_CLUSTER_HEIGHT);
+    cf_dict_set_i64(d, "widthPixels", cw);
+    cf_dict_set_i64(d, "heightPixels", ch);
     cf_dict_set_i64(d, "widthPhysical", g.mm_w);
     cf_dict_set_i64(d, "heightPhysical", g.mm_h);
     cf_dict_set_i64(d, "maxFPS", cluster_fps());
     cf_dict_set_i64(d, "features", 0); /* no touch, no knob */
     cf_dict_set(d, "initialVideoStreams", streams);
-    set_area(view, 0, 0, MCN_CLUSTER_WIDTH, MCN_CLUSTER_HEIGHT);
+    set_area(view, 0, 0, cw, ch);
     set_area(safe, g.x, g.y, g.w, g.h);
     /*
      * The map fills the window; the phone keeps the car marker and its cards in the safe area.
@@ -204,8 +250,8 @@ static CFMutableDictionaryRef cluster_display(void)
     return d;
 }
 
-/* GEM "Native arrows only" (mcn_set.sh arrows): the phone is not offered the cluster at all. */
-static int arrows_only(void)
+/* GEM "Native arrows only" (mcn_set.sh arrows): neither phone is offered the cluster screen. */
+int mcn_arrows_only(void)
 {
     char mode[8] = { 0 };
     int fd = open(MCN_MODE_FILE, O_RDONLY);
@@ -233,7 +279,7 @@ static void advertise(CFMutableDictionaryRef info)
     if (!mcn_active() || cf_array_count(stock) != 1 || !mcn_stream_ready()) {
         return;
     }
-    if (arrows_only()) {
+    if (mcn_arrows_only()) {
         mcn_log("/info: native arrows only, cluster not offered");
         return;
     }
@@ -343,7 +389,7 @@ MCN_EXPORT OSStatus AirPlayReceiverSessionSetup(void *session, CFDictionaryRef r
         return err;
     }
     /* The first SETUP of a session sets up timing and events and answers their ports. */
-    if (cf_dict_get(*response, "eventPort") && !arrows_only()) {
+    if (cf_dict_get(*response, "eventPort") && !mcn_arrows_only()) {
         enable_features((CFMutableDictionaryRef)*response);
     }
     if (cf_dict_get(*response, "eventPort")) {
@@ -385,6 +431,8 @@ MCN_EXPORT void mcn_init(void)
 {
     mcn_log("SAL hooks loaded");
     mcn_guard_init();
+    mcn_stream_init();
+    mcn_vpu_init();
     mcn_lab_start();
     mcn_route_start_worker();
 }

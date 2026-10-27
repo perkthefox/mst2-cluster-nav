@@ -35,10 +35,17 @@ typedef int pthread_t;
 #define O_CREAT 0x0100
 #define O_TRUNC 0x0200
 
+/* <sys/mman.h> values as the unit's showmem prints them (mQbEMU research notes). */
 #define PROT_READ 0x0100
 #define PROT_WRITE 0x0200
+#define PROT_NOCACHE 0x0800
 #define MAP_SHARED 0x0001
+#define MAP_PRIVATE 0x0002
+#define MAP_ANON 0x00080000
+#define MAP_PHYS 0x00010000
 #define MAP_FAILED ((void *)-1)
+/* QNX: physical address of a mapping made with MAP_PHYS (for handing buffers to the GC320). */
+int mem_offset(const void *addr, int fd, size_t len, off_t *offset, size_t *contig_len);
 
 #define CLOCK_MONOTONIC 2
 
@@ -91,6 +98,14 @@ int clock_gettime(int clock, struct timespec *ts);
 int pthread_create(pthread_t *thread, const void *attr, void *(*fn)(void *), void *arg);
 int pthread_detach(pthread_t thread);
 int pthread_join(pthread_t thread, void **value);
+/* QNX pthread_mutex_t is 8 bytes; VideoSink's Mutex at endpoint+0x4c is one (aa-video notes). */
+typedef struct {
+    int owner;
+    unsigned count;
+} pthread_mutex_t;
+int pthread_mutex_init(pthread_mutex_t *mutex, const void *attr);
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
 
 struct pollfd {
     int fd;

@@ -19,31 +19,26 @@ import org.osgi.framework.BundleContext;
 public final class Activator implements BundleActivator {
     static final String DATA_DIR = "/tsd/var/mst2-cluster-nav/";
 
-    private Demo demo;
     private Replay replay;
     private PhoneLink phone;
+    private Thread phoneThread;
 
     public void start(BundleContext context) {
         try {
             log("started");
             settle();
             ClusterCarPlay.install();
+            NowPlaying.start();
             phone = new PhoneLink();
-            Thread link = new Thread(phone, "mst2-cluster-nav-phone");
-            link.setDaemon(true);
-            link.start();
+            phoneThread = new Thread(phone, "mst2-cluster-nav-phone");
+            phoneThread.setDaemon(true);
+            phoneThread.start();
             if (new File(DATA_DIR + "replay.txt").exists()) {
                 replay = new Replay(DATA_DIR + "replay.txt");
                 Thread r = new Thread(replay, "mst2-cluster-nav-replay");
                 r.setDaemon(true);
                 r.start();
                 log("replaying " + DATA_DIR + "replay.txt");
-            } else if (new File(DATA_DIR + "demo").exists()) {
-                demo = new Demo();
-                Thread t = new Thread(demo, "mst2-cluster-nav-demo");
-                t.setDaemon(true);
-                t.start();
-                log("demo guidance running");
             }
         } catch (Throwable t) {
             /* Never let the mod take the HMI down. */
@@ -54,6 +49,7 @@ public final class Activator implements BundleActivator {
     /*
      * After a minute without trouble, tell the guard in runHMI.sh that the mod has settled: an
      * HMI restart before that turns the mod off (toolbox/custom/mst2-cluster-nav/runHMI.block).
+     * The guard's crash mark on the system partition, left before the JVM starts, goes too.
      */
     private static void settle() {
         Thread t = new Thread("mst2-cluster-nav-settle") {
@@ -61,6 +57,10 @@ public final class Activator implements BundleActivator {
                 try {
                     Thread.sleep(60000);
                     new FileOutputStream("/dev/shmem/mst2-cluster-nav-hmi-ok").close();
+                    File busy = new File(DATA_DIR + "hmi-busy");
+                    if (busy.exists() && !busy.delete()) {
+                        log("cannot remove " + busy);
+                    }
                     log("settled");
                 } catch (Throwable t) {
                     log("cannot mark settled: " + t);
@@ -72,19 +72,22 @@ public final class Activator implements BundleActivator {
     }
 
     public void stop(BundleContext context) {
-        if (phone != null) {
-            phone.stop();
-            phone = null;
+        try {
+            if (phone != null) {
+                /* Its cleanup gives the cluster back through the stock notifications first. */
+                phone.stop();
+                phoneThread.join(3000);
+                phone = null;
+            }
+            if (replay != null) {
+                replay.stop();
+                replay = null;
+            }
+        } catch (Throwable t) {
+            log("stop: " + t);
         }
         ClusterCarPlay.uninstall();
-        if (replay != null) {
-            replay.stop();
-            replay = null;
-        }
-        if (demo != null) {
-            demo.stop();
-            demo = null;
-        }
+        NowPlaying.uninstall();
     }
 
     /* The log in RAM all parts of the mod append to; GEM "Save diagnostics" copies it. */

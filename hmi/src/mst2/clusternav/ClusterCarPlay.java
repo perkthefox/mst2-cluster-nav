@@ -10,6 +10,9 @@ import java.util.Iterator;
 import de.vw.mib.asl.api.carplay.ASLCarplayServicesListener;
 import de.vw.mib.asl.framework.api.framework.ASLFrameworkFactory;
 import de.vw.mib.bap.mqbab2.common.api.APIFactory;
+import de.vw.mib.bap.mqbab2.common.api.androidauto.AndroidAutoASLDataAdapter;
+import de.vw.mib.bap.mqbab2.common.api.androidauto.AndroidAutoService;
+import de.vw.mib.bap.mqbab2.common.api.androidauto.AndroidAutoServiceListener;
 import de.vw.mib.bap.mqbab2.common.api.carplay.CarPlayService;
 import de.vw.mib.bap.mqbab2.common.api.carplay.CarPlayServiceListener;
 import de.vw.mib.bap.mqbab2.common.api.carplay.datatypes.CarPlayDeviceState;
@@ -26,26 +29,40 @@ import de.vw.mib.bap.mqbab2.common.api.carplay.datatypes.iterator.elements.CarPl
  * this delegate stands in the factory's slot and answers false there; everything else goes to
  * the stock service, and InfoStates falls back to the built-in navigation's state as without
  * CarPlay. Nothing is replaced when CarPlay is not coded (the factory holds its dummy then).
+ * Android Auto's guidance (AndroidAutoASLDataAdapter, property 2910005) gets the same stand-in;
+ * verified safe like CarPlay: the only reader of getAndroidAutoService() (navsd InfoStates) uses
+ * the interface alone, so a plain AndroidAutoService delegate causes no ClassCastException.
  */
 final class ClusterCarPlay implements CarPlayService {
-    private static Field slot;
+    private static final int AA_GUIDANCE = 2910005;
+    private static Field slot, aaSlot;
     private static CarPlayService stock;
+    private static AndroidAutoASLDataAdapter aaStock;
     private static volatile boolean phoneOwnsCluster;
+    /* Set by uninstall: an install still queued on the ASL thread must not run after it. */
+    private static volatile boolean stopped;
 
     private ClusterCarPlay() {
     }
 
     /** Puts the delegate into APIFactory, on the ASL thread like the stock factory calls. */
     static void install() {
+        stopped = false;
         safeEnqueue(new Runnable() {
             public void run() {
+                if (stopped) {
+                    return;
+                }
                 try {
                     Field[] fields = APIFactory.class.getDeclaredFields();
                     for (int i = 0; i < fields.length; i++) {
                         if (fields[i].getType() == CarPlayService.class) {
                             slot = fields[i];
+                        } else if (fields[i].getType() == AndroidAutoService.class) {
+                            aaSlot = fields[i];
                         }
                     }
+                    installAndroidAuto();
                     slot.setAccessible(true);
                     /* The stock getter creates the service if nobody has asked yet. */
                     CarPlayService current = APIFactory.getAPIFactory().getCarPlayService();
@@ -63,7 +80,23 @@ final class ClusterCarPlay implements CarPlayService {
         });
     }
 
+    private static void installAndroidAuto() {
+        try {
+            AndroidAutoService current = APIFactory.getAPIFactory().getAndroidAutoService();
+            if (!(current instanceof AndroidAutoASLDataAdapter)) {
+                Activator.log("Android Auto not coded, its cluster notice left alone");
+                return;
+            }
+            aaSlot.setAccessible(true);
+            aaStock = (AndroidAutoASLDataAdapter)current;
+            aaSlot.set(null, new AndroidAuto());
+        } catch (Throwable t) {
+            Activator.log("cannot take the Android Auto service: " + t);
+        }
+    }
+
     static void uninstall() {
+        stopped = true;
         safeEnqueue(new Runnable() {
             public void run() {
                 try {
@@ -72,6 +105,11 @@ final class ClusterCarPlay implements CarPlayService {
                     if (stock != null) {
                         slot.set(null, stock);
                     }
+                    if (aaStock != null) {
+                        aaSlot.set(null, aaStock);
+                    }
+                    /* InfoStates asks the stock services again. */
+                    notifyInfoStates();
                 } catch (Throwable t) {
                     Activator.log("cannot restore the CarPlay service: " + t);
                 }
@@ -88,16 +126,32 @@ final class ClusterCarPlay implements CarPlayService {
         Activator.log(owns ? "cluster: phone" : "cluster: stock");
         safeEnqueue(new Runnable() {
             public void run() {
-                /* The stock notification InfoStates listens to (CarPlayASLDataAdapter). */
-                if (stock != null) {
-                    ((ASLCarplayServicesListener)stock).updateCarPlayRouteGuidanceActive(false);
+                try {
+                    notifyInfoStates();
+                } catch (Throwable t) {
+                    Activator.log("cluster notice not refreshed: " + t);
                 }
             }
         });
     }
 
+    /* ASL thread. */
+    private static void notifyInfoStates() {
+        /*
+         * The stock notification InfoStates listens to (CarPlayASLDataAdapter); the adapter
+         * ignores the argument and only notifies its listeners.
+         */
+        if (stock != null) {
+            ((ASLCarplayServicesListener)stock).updateCarPlayRouteGuidanceActive(false);
+        }
+        /* Android Auto's adapter tells its listeners (InfoStates) the same way. */
+        if (aaStock != null) {
+            aaStock.datapoolValueChanged(AA_GUIDANCE);
+        }
+    }
+
     /* Callers are the bundle's own threads: an ASL failure is logged, never thrown at them. */
-    private static void safeEnqueue(Runnable r) {
+    static void safeEnqueue(Runnable r) {
         try {
             ASLFrameworkFactory.getASLFrameworkAPI().getServices().getASLThreadSwitch().enqueue(r);
         } catch (Throwable t) {
@@ -135,5 +189,19 @@ final class ClusterCarPlay implements CarPlayService {
 
     public void acceptCall(int i) {
         stock.acceptCall(i);
+    }
+
+    private static final class AndroidAuto implements AndroidAutoService {
+        public boolean isAndroidAutoRouteGuidanceActive() {
+            return !phoneOwnsCluster && aaStock.isAndroidAutoRouteGuidanceActive();
+        }
+
+        public void addAndroidAutoServiceListener(AndroidAutoServiceListener l, int[] ids) {
+            aaStock.addAndroidAutoServiceListener(l, ids);
+        }
+
+        public void removeAndroidAutoServiceListener(AndroidAutoServiceListener l, int[] ids) {
+            aaStock.removeAndroidAutoServiceListener(l, ids);
+        }
     }
 }

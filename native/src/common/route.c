@@ -130,6 +130,19 @@ static int same(const struct mcn_maneuver *a, const struct mcn_maneuver *b)
            !strcmp(a->description, b->description);
 }
 
+/* A maneuver left near its point is passed once the current one is known and differs. */
+static void settle(struct mcn_route *r)
+{
+    const struct mcn_maneuver *cur = maneuver(r, r->current);
+
+    if (r->pending && cur) {
+        if (!same(&r->left, cur)) {
+            snprintf(r->passed, sizeof(r->passed), "%s", target(r, &r->left));
+        }
+        r->pending = 0;
+    }
+}
+
 int mcn_route_message(struct mcn_route *r, const uint8_t *msg, unsigned n,
                       unsigned now)
 {
@@ -193,6 +206,7 @@ int mcn_route_message(struct mcn_route *r, const uint8_t *msg, unsigned n,
         }
         r->state = state;
         r->rerouted |= state == 5;
+        r->pending &= state != 5; /* a reroute replaced it, not the road */
         r->active = state != 0;
         r->distance = value(p, left, 10, 4, r->distance);
         r->remaining = value(p, left, 6, 8, r->remaining);
@@ -221,12 +235,13 @@ int mcn_route_message(struct mcn_route *r, const uint8_t *msg, unsigned n,
                     /*
                      * Passed: replaced within MCN_RG_PASSED_M by a different maneuver, not by a
                      * reroute. Yandex Maps gives every update a new index, the same maneuver
-                     * included (car, 2026-10-26: one turn as 19, 20, 21, 22 from 890 m to 80 m).
-                     * An unnamed road clears the street rather than keep the one left behind.
+                     * included (car, 2026-10-26: one turn as 19, 20, 21, 22 from 890 m to 80 m),
+                     * so "different" waits for the new index's 0x5202 (settle). An unnamed road
+                     * clears the street rather than keep the one left behind.
                      */
-                    if (was && !r->rerouted && before >= 0 && before <= MCN_RG_PASSED_M &&
-                        !same(was, maneuver(r, next))) {
-                        snprintf(r->passed, sizeof(r->passed), "%s", target(r, was));
+                    if (was && !r->rerouted && before >= 0 && before <= MCN_RG_PASSED_M) {
+                        memcpy(&r->left, was, sizeof(r->left));
+                        r->pending = 1;
                     }
                     r->rerouted = 0;
                 }
@@ -341,6 +356,7 @@ int mcn_route_message(struct mcn_route *r, const uint8_t *msg, unsigned n,
             left -= size;
         }
     }
+    settle(r);
     /* Only route status is a heartbeat: stale cached maneuvers cannot keep a route alive. */
     if (id == 0x5201) {
         r->seen = 1;
@@ -361,7 +377,14 @@ static const char *street(const struct mcn_route *r)
 
 int mcn_route_owns(const struct mcn_route *r, unsigned now)
 {
-    return r->seen && r->active && (r->state != 2 || now - r->updated_ms < MCN_RG_ARRIVED_MS);
+    /*
+     * The silence limit is the fallback end of guidance. A phone pulled out normally ends the
+     * AirPlay session through TEARDOWN (the plug-in's connection close calls it with no request,
+     * reason kConnectionErr: libext.apple.carplay.airplay.so 0x20874-0x20894), which the SAL
+     * hook turns into the end of the session.
+     */
+    return r->seen && r->active && now - r->updated_ms < MCN_RG_SILENT_MS &&
+           (r->state != 2 || now - r->updated_ms < MCN_RG_ARRIVED_MS);
 }
 
 int mcn_route_text(const struct mcn_route *r, unsigned now, char *out,
@@ -654,14 +677,52 @@ static int config_ids(char *out, unsigned size, unsigned *used,
            add_ids(out, size, used, recv, nr, recvs, 3);
 }
 
+/*
+ * Now playing: with [nowplaying] enable=yes the stock driver announces 0x5000 in its
+ * identification (feature bit 0x80, MessagesSent builder; mQbEMU notes ev_e1dd2d9c), asks the
+ * phone for these attributes and publishes them to PPS for media.c. No artwork yet: it comes
+ * by file transfer over the same iAP2 link.
+ * ID budget (P0480T): ident_info_sendmsgs/recvmsgs (0xe270/0xdae8) list the stock IDs of each
+ * enabled feature, then the [ident] ones, in 0x80 bytes, and drop cfg IDs past it. With every
+ * feature bit on the stock lists hold 45 sent and 24 received IDs (NowPlaying 0x5000/02/03 and
+ * 0x5001 among them), so ours, 2 and 3, still fit: 94 and 54 of 128 bytes. 0x5001 is a named
+ * message: link_handle_iap2pkt calls nowplay_update_recv (0x16074), keeps r6 = 0 and the
+ * packet goes back to the receive pool; recv_all drains it like any other packet.
+ */
+static const char *const np_keys[] = {"enable", "metadata", "playback"};
+static const char *const np_lines[] = {
+    "enable=yes\n", "metadata=Title,Artist,AlbumTitle\n", "playback=Status\n"};
+
+/* Index in np_keys of the "key =" line at p, or -1. */
+static int np_key(const char *p, unsigned n)
+{
+    unsigned k;
+
+    for (k = 0; k < 3; k++) {
+        unsigned len = (unsigned)strlen(np_keys[k]), at = len;
+
+        if (n <= len || memcmp(p, np_keys[k], len) != 0) {
+            continue;
+        }
+        while (at < n && (p[at] == ' ' || p[at] == '\t')) {
+            at++;
+        }
+        if (at < n && p[at] == '=') {
+            return (int)k;
+        }
+    }
+    return -1;
+}
+
 int mcn_route_config(const char *in, unsigned len, char *out, unsigned size)
 {
-    unsigned pos = 0, used = 0, ns = 0, nr = 0;
+    unsigned pos = 0, used = 0, ns = 0, nr = 0, k, np_seen = 0;
     const char *send = "", *recv = "";
-    int ident = 0, found = 0;
+    int ident = 0, found = 0, nowplaying = 0, np_found = 0;
 
     while (pos < len) {
         unsigned start = pos, end, key;
+        int np;
 
         while (pos < len && in[pos] != '\n') {
             pos++;
@@ -683,6 +744,30 @@ int mcn_route_config(const char *in, unsigned len, char *out, unsigned size)
                 return -1; /* Ambiguous repeated sections: leave the stock config alone. */
             }
             found |= ident;
+            /* Leaving a [nowplaying] section: add any of enable/metadata/playback the stock
+             * section did not have, before this new section header, or the driver never gets
+             * the attribute list and now playing stays silent (code review). */
+            if (nowplaying) {
+                for (k = 0; k < 3; k++) {
+                    if (!(np_seen & (1u << k)) &&
+                        !append(out, size, &used, np_lines[k], (unsigned)strlen(np_lines[k]))) {
+                        return -1;
+                    }
+                }
+            }
+            nowplaying = end - key >= 12 && memcmp(in + key, "[nowplaying]", 12) == 0;
+            if (nowplaying) {
+                np_seen = 0;
+            }
+            np_found |= nowplaying;
+        }
+        np = nowplaying ? np_key(in + key, end - key) : -1;
+        if (np >= 0) {
+            np_seen |= 1u << np;
+            if (!append(out, size, &used, np_lines[np], (unsigned)strlen(np_lines[np]))) {
+                return -1;
+            }
+            continue;
         }
         if (ident && end - key >= 8 &&
             (memcmp(in + key, "sendmsgs", 8) == 0 ||
@@ -719,12 +804,33 @@ int mcn_route_config(const char *in, unsigned len, char *out, unsigned size)
     if (used && out[used - 1] != '\n' && !append(out, size, &used, "\n", 1)) {
         return -1;
     }
+    /* A real [nowplaying] section was the last one: add its missing attribute lines now, before
+     * the [ident] section we append below, so they belong to [nowplaying]. */
+    if (nowplaying) {
+        for (k = 0; k < 3; k++) {
+            if (!(np_seen & (1u << k)) &&
+                !append(out, size, &used, np_lines[k], (unsigned)strlen(np_lines[k]))) {
+                return -1;
+            }
+        }
+    }
     if (!found && !append(out, size, &used, "[ident]\n", 8)) {
         return -1;
     }
     if ((!found || ident) &&
         !config_ids(out, size, &used, send, ns, recv, nr)) {
         return -1;
+    }
+    /* No [nowplaying] section at all: add a complete one at the end. */
+    if (!np_found) {
+        if (!append(out, size, &used, "[nowplaying]\n", 13)) {
+            return -1;
+        }
+        for (k = 0; k < 3; k++) {
+            if (!append(out, size, &used, np_lines[k], (unsigned)strlen(np_lines[k]))) {
+                return -1;
+            }
+        }
     }
     return (int)used;
 }

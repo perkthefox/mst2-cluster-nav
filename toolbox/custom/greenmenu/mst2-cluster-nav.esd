@@ -41,15 +41,11 @@ keyValue
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_auto.sh"
-    label   "Auto (phone map when the app provides it, otherwise native arrows)"
+    label   "Auto / phone map (the phone's map when the app provides it, otherwise native arrows)"
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_arrows.sh"
     label   "Native arrows only"
-
-script
-    value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_map.sh"
-    label   "Phone map"
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_fps30.sh"
@@ -97,16 +93,25 @@ script
 
 keyValue
     value   String sys 0x00000000 0
-    label   ""
+    label   "CarPlay cluster map zoom-out (applies from the next phone connection):"
     poll    0
 
 script
-    value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_demo-on.sh"
-    label   "Demo guidance on (check the install without a phone)"
+    value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_zoom-off.sh"
+    label   "Zoom-out: off (default)"
 
 script
-    value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_demo-off.sh"
-    label   "Demo guidance off"
+    value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_zoom1250.sh"
+    label   "Zoom-out: 1.25x (shows more map around the car)"
+
+script
+    value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_zoom1500.sh"
+    label   "Zoom-out: 1.5x (shows even more map)"
+
+keyValue
+    value   String sys 0x00000000 0
+    label   ""
+    poll    0
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_status.sh"
@@ -114,7 +119,7 @@ script
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_diag.sh"
-    label   "Save diagnostics to the SD card (run with CarPlay connected, after a drive)"
+    label   "Save diagnostics to the SD card (contains route, phone and network details)"
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_uninstall.sh"
