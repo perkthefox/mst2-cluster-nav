@@ -15,7 +15,7 @@ case "$1" in
     if grep -q "$LIBDIR/" $CPU_CONF && mcn_installed; then
       touch $MCN/enabled
       rm -f $MCN/off-reason $MCN/hmi-busy $MCN/hmi-strikes
-      echo "Loads on every boot."
+      echo "ENABLED PERMANENTLY: the mod loads on EVERY boot from now on."
     else
       echo "The mod is no longer registered in the stock files ($(cat $MCN/off-reason 2>/dev/null)). Use Install."
     fi
@@ -24,7 +24,7 @@ case "$1" in
   trial)
     rm -f $MCN/hmi-busy $MCN/hmi-strikes
     touch /dev/shmem/mst2-cluster-nav-armed $MCN/trial
-    echo "The next boot loads the mod once."
+    echo "TRIAL BOOT armed: the NEXT boot loads the mod ONCE; then press 'ENABLE PERMANENTLY'."
     ;;
   # "map" (an older menu entry) always behaved as auto; SAL only tells "arrows" apart.
   arrows|auto) echo $1 > $MCN/mode; echo "Cluster mode: $1 ($NEXT)" ;;
@@ -77,6 +77,17 @@ case "$1" in
     ;;
   *) echo "unknown setting $1"; exit 1 ;;
 esac
+if [ -e $MCN/enabled ]; then
+  echo "STATE: ENABLED PERMANENTLY (loads on every boot)"
+elif [ -e /dev/shmem/mst2-cluster-nav-trial ] || { [ -e /dev/shmem/mst2-cluster-nav-on ] &&
+    [ ! -e $MCN/trial ]; }; then
+  echo "STATE: TRIAL BOOT RUNNING NOW - after the next reboot the mod is OFF."
+  echo "       All good? -> press 'ENABLE PERMANENTLY' now."
+elif [ -e $MCN/trial ]; then
+  echo "STATE: TRIAL BOOT ARMED - the NEXT boot loads the mod ONCE."
+else
+  echo "STATE: OFF (not loaded at boot). 'Arm another trial boot' or 'ENABLE PERMANENTLY'."
+fi
 echo "HMI $(mcn_hmi_version); registered: $(mcn_installed && echo yes || echo no)"
 [ -e $MCN/off-reason ] && echo "turned itself off: $(cat $MCN/off-reason)"
 for c in sal dm ipod; do

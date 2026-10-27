@@ -15,16 +15,26 @@ keyValue
 
 keyValue
     value   String sys 0x00000000 0
-    label   "Install arms ONE trial boot. Emergency: SD card with file mst2-cluster-nav-disable."
+    label   "!!! INSTALL = ONE TRIAL BOOT ONLY. The mod runs for ONE boot, then it is OFF again !!!"
+    poll    0
+
+keyValue
+    value   String sys 0x00000000 0
+    label   "!!! Works fine on the trial boot? -> press ENABLE PERMANENTLY below, or it is gone !!!"
+    poll    0
+
+keyValue
+    value   String sys 0x00000000 0
+    label   "Emergency: SD card with an empty file mst2-cluster-nav-disable stops the mod."
     poll    0
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_install.sh"
-    label   "Install / update (next boot is a trial)"
+    label   "1. Install / update -> reboot -> the mod runs for ONE TRIAL BOOT"
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_enable.sh"
-    label   "Enable permanently"
+    label   "2. ENABLE PERMANENTLY (after a good trial boot: loads on EVERY boot)"
 
 script
     value   sys 1 0x0100 "/tsd/etc/persistence/esd/scripts/mcn_set_trial.sh"

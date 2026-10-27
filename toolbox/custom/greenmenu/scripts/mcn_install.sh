@@ -96,6 +96,11 @@ done
 rm -f $MCN/enabled
 # The trial is the next boot's: the running hooks must not take it (native/include/mcn_hook.h).
 touch /dev/shmem/mst2-cluster-nav-armed $MCN/trial
-echo "Installed. The NEXT boot loads the mod once (trial)."
-echo "If the unit works, choose 'Enable permanently'. Emergency: an SD card"
-echo "with an empty file 'mst2-cluster-nav-disable' stops the mod before the HMI starts."
+echo "Installed."
+echo "##########################################################################"
+echo "#  TRIAL BOOT: reboot now. The mod runs for THIS ONE NEXT BOOT ONLY.     #"
+echo "#  After that boot it is OFF again, unless you press                     #"
+echo "#  'ENABLE PERMANENTLY' in this menu while the trial boot is running.    #"
+echo "##########################################################################"
+echo "Emergency: an SD card with an empty file 'mst2-cluster-nav-disable' stops the mod"
+echo "before the HMI starts."
