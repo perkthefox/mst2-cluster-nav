@@ -46,8 +46,14 @@ void mcn_log2(const char *a, const char *b)
     log_line(a, b);
 }
 
+void (*mcn_first_call)(void);
+static int first_called;
+
 void *mcn_hook_enter(struct mcn_hook *hook)
 {
+    if (mcn_first_call && !first_called && !__sync_lock_test_and_set(&first_called, 1)) {
+        mcn_first_call();
+    }
     if (!hook->real) {
         void *lib = dlopen(hook->lib, RTLD_LAZY | RTLD_GLOBAL);
         hook->real = lib ? dlsym(lib, hook->name) : NULL;

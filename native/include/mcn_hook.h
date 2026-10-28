@@ -20,6 +20,15 @@ struct mcn_hook {
 
 /* Returns the real function for the hook; never NULL (aborts the process otherwise). */
 void *mcn_hook_enter(struct mcn_hook *hook);
+/*
+ * Called once, from the first hook call, when set (by mcn_init). Nothing may run on a thread of
+ * ours before the service's own code calls us: DT_INIT runs before the executable's C++ static
+ * constructors, and SAL exports its own malloc, which locks a tsd Mutex built by one of them
+ * (tsd.mibstd2.sal.main malloc 0x14d264 -> 0x14d008). A thread of ours allocating that early
+ * raced its construction, and SAL's main thread died with "Failed to aquire mutex: Invalid
+ * argument" (mQbEMU, 3 of 7 boots).
+ */
+extern void (*mcn_first_call)(void);
 void mcn_log(const char *msg);
 void mcn_log2(const char *a, const char *b);
 /* One "key=value" datagram to the HMI bundle (PhoneLink, UDP 127.0.0.1:MCN_LINK_PORT). */

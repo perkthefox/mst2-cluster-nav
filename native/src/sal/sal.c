@@ -434,5 +434,7 @@ MCN_EXPORT void mcn_init(void)
     mcn_stream_init();
     mcn_vpu_init();
     mcn_lab_start();
-    mcn_route_start_worker();
+    /* Not from here: SAL's static constructors have not run yet (mcn_hook.h). Every job of the
+     * worker waits for a phone, and a phone reaches SAL's code, and so our hooks, first. */
+    mcn_first_call = mcn_route_start_worker;
 }
