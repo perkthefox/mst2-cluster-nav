@@ -3,14 +3,17 @@
  * Copyright (c) 2026 Anton Perk. CC BY-NC-SA 4.0, see LICENSE and NOTICE.
  *
  * The CarPlay zoom-out downscale on the i.MX6 GC320 2D core (QNX Screen), so the CPU never
- * reads the decoded frame. The blitter filter-scales the phone's NV12 frame into a YUY2
- * scratch at 1010x376 (gco2D_FilterBlit, filtered, because the source is planar); a short
- * YUY2->NV12 pass (common/scale.c) finishes it into the VPU encoder's source, since the GC320
- * cannot write NV12 (gc320 TranslateDestinationFormat, mQbEMU research notes). Buffers are
- * wrapped over our physically contiguous memory (POINTER/SIZE), which the Screen server maps and
- * the gc320 module hands the hardware directly when contiguous. The property and blit-attribute
- * numbers are QNX 6.5 Screen constants confirmed against the gc320 module. Any Screen failure
- * returns -1 and the transcoder shows nothing: there is no CPU fallback (mcn_transcode.h).
+ * reads the decoded frame. The blitter scales the phone's NV12 frame into a YUY2 scratch at
+ * 1010x376 (the gc320 module takes gco2D_FilterBlit for a planar source); a short YUY2->NV12
+ * pass (common/scale.c) finishes it into the VPU encoder's source, since the GC320 cannot write
+ * NV12 (gc320 TranslateDestinationFormat, mQbEMU research notes). Buffers are wrapped over our
+ * physically contiguous memory (POINTER/SIZE), which the Screen server maps and the gc320 module
+ * hands the hardware directly when contiguous. The property and blit-attribute numbers are QNX
+ * 6.5 Screen constants confirmed against libscreen and the server. The scratch's rows are 64-byte
+ * aligned: with its natural 2020-byte stride the server refused every blit (flush -1, EFAULT),
+ * with 2048 it passed it on to the GC320 (mQbEMU, the unit's own Screen server, 2026-10-28).
+ * Any Screen failure returns -1 (the first one is logged with errno) and the transcoder shows
+ * nothing: there is no CPU fallback (mcn_transcode.h).
  */
 #include "sal.h"
 #include "mcn_transcode.h"
@@ -28,10 +31,8 @@
 /* Pixel formats. */
 #define SCREEN_FORMAT_NV12            12
 #define SCREEN_FORMAT_YUY2            15
-/* Usage: the GPU reads and writes these off-screen buffers. */
+/* Usage: native (GPU) only; READ/WRITE would also have the server map each buffer back. */
 #define SCREEN_USAGE_NATIVE          0x08
-#define SCREEN_USAGE_READ            0x02
-#define SCREEN_USAGE_WRITE           0x04
 /* Application context and blit. */
 #define SCREEN_APPLICATION_CONTEXT   0
 #define SCREEN_BLIT_SOURCE_X         1
@@ -74,7 +75,7 @@ static int resolved, hw_ok, hw_broken;
 static void *ctx;
 static void *yuy2_buf, *yuy2_pix;
 static uint8_t *yuy2_virt;
-static int dw, dh; /* the YUY2 scratch's size, fixed at the first use */
+static int dw, dh, ystride; /* the YUY2 scratch's size and row pitch, fixed at the first use */
 /* One realized Screen pixmap+buffer per distinct decoded-frame physical address. */
 static struct {
     uint32_t phys;
@@ -115,7 +116,7 @@ static int wrap_buffer(void **buf, void **pix, int format, uint8_t *virt, int st
     /* The libscreen PLANAR_OFFSETS handler reads three ints; NV12 uses the first two (luma 0,
      * chroma), the third is the unused V plane. A 2-element array would read one int past it. */
     int wh[2] = {w, h}, offs[3] = {0, chroma_off, 0};
-    int usage = SCREEN_USAGE_NATIVE | SCREEN_USAGE_READ | SCREEN_USAGE_WRITE;
+    int usage = SCREEN_USAGE_NATIVE;
     int bytes = (int)size;
     void *p = virt;
 
@@ -146,12 +147,27 @@ fail:
     return 0;
 }
 
+/* The first Screen failure of this SAL, with errno: which step the server refused. */
+static int failed(const char *step)
+{
+    static int said;
+    char line[80];
+
+    if (!said) {
+        said = 1;
+        snprintf(line, sizeof(line), "transcode: GC320 %s failed, errno %d", step,
+                 *__get_errno_ptr());
+        mcn_log(line);
+    }
+    return 1;
+}
+
 /* Lazy GC320 set-up for a dw x dh output; returns 0 if Screen is not usable. */
 static int hw_open(int out_w, int out_h)
 {
     off_t phys = 0;
     size_t contig = 0;
-    unsigned ysize = (unsigned)out_w * out_h * 2u; /* YUY2: 2 bytes per pixel */
+    unsigned ysize;
 
     if (hw_ok) {
         return 1;
@@ -162,18 +178,24 @@ static int hw_open(int out_w, int out_h)
     }
     dw = out_w;
     dh = out_h;
+    ystride = (out_w * 2 + 63) & ~63; /* YUY2: 2 bytes per pixel, rows 64-byte aligned */
+    ysize = (unsigned)ystride * (unsigned)out_h;
     /* Uncached, as the stock encoder plug-in maps memory the hardware writes (mmap64 PROT 0xB00,
      * MAP_PHYS|MAP_ANON, imx6_video_encoder.so 0x1f54): the GC320 writes it behind the CPU's
      * caches, so a cached mapping could serve stale lines of the previous frame. */
     yuy2_virt = mmap(0, ysize, PROT_READ | PROT_WRITE | PROT_NOCACHE, MAP_PHYS | MAP_ANON, -1, 0);
-    if (yuy2_virt == MAP_FAILED || create_context(&ctx, SCREEN_APPLICATION_CONTEXT) != 0 ||
-        mem_offset(yuy2_virt, -1, ysize, &phys, &contig) != 0 || contig < ysize) {
-        hw_broken = 1;
+    if (yuy2_virt == MAP_FAILED || mem_offset(yuy2_virt, -1, ysize, &phys, &contig) != 0 ||
+        contig < ysize) {
+        hw_broken = failed("scratch memory");
         return 0;
     }
-    if (!wrap_buffer(&yuy2_buf, &yuy2_pix, SCREEN_FORMAT_YUY2, yuy2_virt, out_w * 2, out_w, out_h,
+    if (create_context(&ctx, SCREEN_APPLICATION_CONTEXT) != 0) {
+        hw_broken = failed("context");
+        return 0;
+    }
+    if (!wrap_buffer(&yuy2_buf, &yuy2_pix, SCREEN_FORMAT_YUY2, yuy2_virt, ystride, out_w, out_h,
                      0, ysize)) {
-        hw_broken = 1;
+        hw_broken = failed("scratch buffer");
         return 0;
     }
     hw_ok = 1;
@@ -221,15 +243,23 @@ int mcn_scale(const struct mcn_plane *src, const struct mcn_plane *dst)
     int y;
 
     if (row > YUY2_ROW_MAX || (dst->h & 1) || !hw_open(dst->w, dst->h) || dst->w != dw ||
-        dst->h > dh || (spix = src_pixmap(src)) == 0 ||
-        blit(ctx, yuy2_buf, src_cache_buf(spix), attribs) != 0 ||
-        flush_blits(ctx, SCREEN_WAIT_IDLE) != 0) {
+        dst->h > dh) {
         return -1;
+    }
+    if ((spix = src_pixmap(src)) == 0) {
+        return -failed("source buffer");
+    }
+    if (blit(ctx, yuy2_buf, src_cache_buf(spix), attribs) != 0) {
+        return -failed("blit");
+    }
+    if (flush_blits(ctx, SCREEN_WAIT_IDLE) != 0) {
+        return -failed("flush");
     }
     /* Two rows at a time out of the uncached scratch with libc memcpy (burst reads), repacked
      * from the stack: byte loads straight from uncached memory would cost a bus access each. */
     for (y = 0; y < dst->h; y += 2) {
-        memcpy(rows, yuy2_virt + (unsigned)y * row, 2u * row);
+        memcpy(rows, yuy2_virt + (unsigned)y * (unsigned)ystride, row);
+        memcpy(rows + row, yuy2_virt + (unsigned)(y + 1) * (unsigned)ystride, row);
         mcn_yuy2_to_nv12(rows, (int)row, dst->w, 2, dst->virt + (unsigned)y * dst->stride,
                          dst->virt + dst->chroma_off + (unsigned)(y / 2) * dst->stride,
                          dst->stride);

@@ -84,7 +84,12 @@ struct vpu {
     uint8_t header[HEADER_MAX];
     unsigned header_len;
     unsigned frames;
+    unsigned said;     /* kinds of trouble already logged (note) */
+    unsigned stats_ms, fed, decoded, encoded, published_kb;
 };
+
+/* Kinds of trouble, each logged once per transcoder: the car log must say which stage stops. */
+enum { N_INIT = 1, N_LOST = 2, N_DEC = 4, N_ENC = 8, N_NO_DISPLAY = 16 };
 
 static struct vpu g;
 static pthread_mutex_t lock;
@@ -202,6 +207,36 @@ static void teardown(void)
     g.dec_ready = 0;
 }
 
+static void note(unsigned kind, const char *what, int a, int b)
+{
+    char line[112];
+
+    if (!(g.said & kind)) {
+        g.said |= kind;
+        snprintf(line, sizeof(line), "transcode: %s (%d, %d)", what, a, b);
+        mcn_log(line);
+    }
+}
+
+/* Every 10 s while frames come: how far through the transcoder they get. */
+static void stats(void)
+{
+    unsigned now = mcn_now_ms();
+    char line[112];
+
+    if (!g.stats_ms) {
+        g.stats_ms = now;
+    }
+    if (now - g.stats_ms >= 10000) {
+        snprintf(line, sizeof(line),
+                 "transcode: %u fed, %u decoded, %u encoded, %u kB published in 10 s", g.fed,
+                 g.decoded, g.encoded, g.published_kb);
+        mcn_log(line);
+        g.stats_ms = now;
+        g.fed = g.decoded = g.encoded = g.published_kb = 0;
+    }
+}
+
 /* Once per transcoder: the reason goes to the log, the VPU is released, nothing more is shown. */
 static void give_up(const char *why)
 {
@@ -210,17 +245,27 @@ static void give_up(const char *why)
     g.dead = 1;
 }
 
-/* Waits for the current VPU job, then always reads its output info (abi.h pitfalls). */
+/*
+ * Waits for the current VPU job, then always reads its output info (abi.h pitfalls). The output
+ * call releases the VPU to other processes even while it is still busy (libmxcvpu 0x150d8,
+ * EncGetOutputInfo has no busy test): a job still running then would collide with the stock
+ * decoder's or DisplayManager's next one, so this transcoder gives up instead.
+ */
 static int wait_done(int enc, void *out)
 {
-    int i;
+    int i, r, busy;
 
     g.f.WaitForInt(enc ? 200 : 2000);
     for (i = 0; i < 40 && g.f.IsBusy(); i++) {
         g.f.WaitForInt(50);
     }
-    return enc ? g.f.EncOut(g.enc, (EncOutputInfo *)out)
-               : g.f.DecOut(g.dec, (DecOutputInfo *)out);
+    busy = g.f.IsBusy();
+    r = enc ? g.f.EncOut(g.enc, (EncOutputInfo *)out) : g.f.DecOut(g.dec, (DecOutputInfo *)out);
+    if (busy) {
+        give_up(enc ? "encoder job still running" : "decoder job still running");
+        return -1;
+    }
+    return r;
 }
 
 /* Bytes in the decoder's ring still to be decoded. */
@@ -262,6 +307,13 @@ static int feed_ring(const uint8_t *au, unsigned n)
  */
 static void lost(void)
 {
+    if (!g.dec_ready) {
+        /* Before the frame buffers are registered vpu_DecBitBufferFlush does nothing (it
+         * returns -10, libmxcvpu 0x168b4): the full ring would stay full for good. */
+        give_up("decoder ring full before set-up");
+        return;
+    }
+    note(N_LOST, "decoder lost its place, waiting for a key frame", 0, 0);
     g.f.DecFlush(g.dec);
     g.need_idr = 1;
     g.want_key = 1;
@@ -323,8 +375,19 @@ static int bring_up(void)
         mcn_log("transcode: decoder init reports called-before");
         return -1;
     }
-    if (n != 0 || di.picWidth <= 0 || di.picHeight <= 0) {
+    /* -1 with no error code: the decoder rolled back and wants more of the stream. Any other
+     * failure of SEQ_INIT (error code at +0x7C, libmxcvpu 0x10b64-0x10ba4) is final. */
+    if (n == -1 && di.errorcode == 0) {
+        note(N_INIT, "decoder needs more stream for its set-up", n, 0);
         return 0;
+    }
+    if (n != 0 || di.picWidth <= 0 || di.picHeight <= 0) {
+        char line[96];
+
+        snprintf(line, sizeof(line), "transcode: decoder set-up failed (%d, error 0x%x, %dx%d)",
+                 n, (unsigned)di.errorcode, di.picWidth, di.picHeight);
+        mcn_log(line);
+        return -1;
     }
     /* The phone must have encoded what it was offered: the rectangle we read must be inside. */
     if (di.picWidth < g.geom.src_x + g.geom.src_w || di.picHeight < g.geom.src_y + g.geom.src_h ||
@@ -449,7 +512,7 @@ static void encode_frame(int k)
     EncParam pr;
     EncOutputInfo eo;
     unsigned luma = (unsigned)g.stride * (unsigned)g.alignh;
-    int idr = g.video->want_idr || g.frames == 0;
+    int idr = g.video->want_idr || g.frames == 0, n;
 
     memset(&src, 0, sizeof(src));
     /* The stock encoder plug-in passes its source with myIndex = the frames it allocated,
@@ -500,8 +563,12 @@ static void encode_frame(int k)
     pr.quantParam = 24; /* used because bitRate is 0; low enough for a crisp map */
     pr.enableAutoSkip = 0;
     memset(&eo, 0, sizeof(eo));
-    if (g.f.EncStart(g.enc, &pr) != 0 || wait_done(1, &eo) != 0 || eo.bitstreamSize == 0 ||
+    n = g.f.EncStart(g.enc, &pr);
+    if (n != 0 || (n = wait_done(1, &eo)) != 0 || eo.bitstreamSize == 0 ||
         eo.bitstreamWrapAround) {
+        if (!g.dead) {
+            note(N_ENC, "encoder failed (code, bytes)", n, (int)eo.bitstreamSize);
+        }
         g.video->want_idr = 1;
         return;
     }
@@ -510,6 +577,8 @@ static void encode_frame(int k)
     }
     publish((const uint8_t *)(uintptr_t)g.stream.virt_uaddr, eo.bitstreamSize, eo.picType == 0);
     g.frames++;
+    g.encoded++;
+    g.published_kb += (eo.bitstreamSize + 512) / 1024;
 }
 
 /*
@@ -522,18 +591,25 @@ static void decode(void)
 {
     DecParam dp;
     DecOutputInfo out;
-    int i;
+    int i, n;
 
     for (i = 0; i < DRAIN_MAX && !g.dead; i++) {
         memset(&dp, 0, sizeof(dp));
         memset(&out, 0, sizeof(out));
-        if (g.f.DecStart(g.dec, &dp) != 0) {
+        if ((n = g.f.DecStart(g.dec, &dp)) != 0) {
+            note(N_DEC, "decoder start failed", n, 0);
             lost();
             return;
         }
-        if (wait_done(0, &out) != 0) {
-            lost();
+        if ((n = wait_done(0, &out)) != 0) {
+            if (!g.dead) {
+                note(N_DEC, "decoder output failed", n, 0);
+                lost();
+            }
             return;
+        }
+        if (out.indexFrameDecoded >= 0) {
+            g.decoded++;
         }
         if (out.indexFrameDisplay >= 0 && out.indexFrameDisplay < g.dec_fb_n) {
             encode_frame(out.indexFrameDisplay);
@@ -546,8 +622,14 @@ static void decode(void)
             return; /* the rest of the picture comes with the next access unit */
         }
         if (!(out.decodingSuccess & DEC_OK)) {
+            note(N_DEC, "picture not decoded (success, decoded index)", (int)out.decodingSuccess,
+                 out.indexFrameDecoded);
             lost();
             return;
+        }
+        if (out.indexFrameDisplay < 0 && out.indexFrameDecoded >= 0) {
+            note(N_NO_DISPLAY, "decoded but nothing to display (display index)",
+                 out.indexFrameDisplay, out.indexFrameDecoded);
         }
         if (out.numOfErrMBs > 0) {
             g.want_key = 1; /* decoded with errors: a key frame clears them */
@@ -650,7 +732,9 @@ void mcn_vpu_feed(unsigned token, const uint8_t *au, unsigned n)
 {
     pthread_mutex_lock(&lock);
     if (token && token == g.token && !g.dead && n) {
+        g.fed++;
         feed(au, n);
+        stats();
     }
     pthread_mutex_unlock(&lock);
 }

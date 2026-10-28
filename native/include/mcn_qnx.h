@@ -46,6 +46,8 @@ typedef int pthread_t;
 #define MAP_FAILED ((void *)-1)
 /* QNX: physical address of a mapping made with MAP_PHYS (for handing buffers to the GC320). */
 int mem_offset(const void *addr, int fd, size_t len, off_t *offset, size_t *contig_len);
+/* The calling thread's errno (QNX libc export, libc.so.3 0x62494). */
+int *__get_errno_ptr(void);
 
 #define CLOCK_MONOTONIC 2
 
