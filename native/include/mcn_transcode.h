@@ -15,8 +15,8 @@
  *   - CarPlay zoom-out: to show more map we advertise an alt screen factor N bigger (the phone
  *     then draws a wider view, confirmed in the CarPlay Simulator), decode it and scale down to
  *     1010x376.
- * The decode and encode run on the i.MX6 VPU and the zoom-out scale on the GC320; the CPU only
- * repacks the GC320's YUY2 output into NV12. mcn_geom() is the arithmetic that picks the request
+ * The decode and encode run on the i.MX6 VPU, the zoom-out scale on the CPU (the GC320 through
+ * Screen only point-samples, common/scale.c). mcn_geom() is the arithmetic that picks the request
  * size and the source rectangle; it is host-tested. The backend (sal/vpu.c) turns phone access
  * units into 1010x376 ones, published through include/mcn_video.h exactly as stream.c does.
  */
@@ -100,37 +100,13 @@ void mcn_gal_video_tick(void);
 void mcn_gal_video_stop(void);
 
 /*
- * Bilinear NV12 downscale (common/scale.c): src_y/src_c are the Y and interleaved-CbCr planes of
- * one frame at sstride; it writes dw x dh into dst_y/dst_c at dstride. All dimensions even.
- * Host-tested reference of the zoom-out scale; the unit scales on the GC320 only (mcn_scale).
+ * Bilinear NV12 downscale (common/scale.c), the CarPlay zoom-out scale on the CPU: src_y/src_c
+ * are the Y and interleaved-CbCr planes of one frame at sstride; it writes dw x dh into
+ * dst_y/dst_c at dstride, one memcpy per row (dst may be uncached). sw a multiple of 4, all
+ * dimensions even, dw < sw and dh < sh. work: MCN_SCALE_WORK(sw, dw) bytes of cached memory.
  */
+#define MCN_SCALE_WORK(sw, dw) ((((sw) + 8 + 3) & ~3) + (dw))
 void mcn_scale_nv12(const uint8_t *src_y, const uint8_t *src_c, int sstride, int sw, int sh,
-                    uint8_t *dst_y, uint8_t *dst_c, int dstride, int dw, int dh);
-
-/* YUY2 (the GC320 filter-blit output) to NV12 (the VPU encoder source). Host-tested. */
-void mcn_yuy2_to_nv12(const uint8_t *yuy2, int ystride, int w, int h, uint8_t *dst_y,
-                      uint8_t *dst_c, int dstride);
-
-/*
- * One NV12 buffer described for the GC320 downscale (sal/scale_gc320.c): its physical base (to
- * hand the 2D blitter) and mapped base (for the CPU finish and fallback), the byte offset of the
- * CbCr plane from the base, the row stride and the picture size.
- */
-struct mcn_plane {
-    uint32_t phys;
-    uint8_t *virt;
-    int chroma_off;
-    int stride, w, h;
-};
-/*
- * Downscales the NV12 src to the NV12 dst (dst smaller) for the CarPlay zoom-out. The GC320 2D
- * core does the filtered scale on hardware; a short YUY2->NV12 pass finishes it (the blitter
- * cannot write NV12). Returns 0 on success, -1 if the GC320 path is not available: there is no
- * CPU fallback (a bilinear pass over the uncached decoded frame on the receiver thread would
- * reach only a few frames a second), the caller then shows nothing. mcn_scale_close, after the
- * last blit, releases this session's source pixmaps.
- */
-int mcn_scale(const struct mcn_plane *src, const struct mcn_plane *dst);
-void mcn_scale_close(void);
+                    uint8_t *dst_y, uint8_t *dst_c, int dstride, int dw, int dh, uint8_t *work);
 
 #endif

@@ -2,40 +2,24 @@
  * mst2-cluster-nav - phone navigation on the MQB instrument cluster.
  * Copyright (c) 2026 Anton Perk. CC BY-NC-SA 4.0, see LICENSE and NOTICE.
  *
- * Pixel helpers of the CarPlay zoom-out mode: the phone draws a view N times bigger than
- * 1010x376 (so it shows more map), and the GC320 shrinks the decoded frame back to the cluster's
- * 1010x376 inside the 1024x384 the encoder reads (sal/scale_gc320.c). mcn_yuy2_to_nv12 repacks
- * the blitter's output on the unit. mcn_scale_nv12 is the host-tested reference of that scale
- * and is not used on the unit: over the uncached decoded frame, about six loads a pixel for
- * 380 000 pixels, it would manage a few frames a second at best on the receiver thread.
+ * The CarPlay zoom-out downscale: the phone draws a view N times bigger than 1010x376 (so it
+ * shows more map), and this shrinks the decoded NV12 frame back to 1010x376 inside the 1024x384
+ * the encoder reads (sal/vpu.c). Bilinear, separable: each output row is first blended from two
+ * source rows (four bytes per multiply), then sampled across. For ratios below 2 every source
+ * pixel weighs into some output pixel, so thin lines and text strokes stay. The GC320 cannot do
+ * this through Screen: its gc320 module sets a 1x1 filter kernel on every scaled blit
+ * (screen-gc320v0.so sym.blit, gco2D_SetKernelSize(1, 1)), which drops whole rows and columns.
  *
  * Y is one byte per pixel; NV12 chroma is CbCr interleaved, one Cb,Cr pair per 2x2 luma block,
- * so the chroma grid is (w/2)x(h/2) and is scaled the same way on each of Cb and Cr.
+ * so the chroma grid is (w/2)x(h/2) and is scaled the same way on each of Cb and Cr. Each output
+ * row is built in the caller's (cached) work buffer and copied out with one memcpy, so the
+ * destination may be uncached memory written in bursts.
  */
 #include "mcn_transcode.h"
 
 #ifdef MCN_HOST
 #include <string.h>
 #endif
-
-/* Bilinear sample of a single-channel plane at the 16.16 source position (sx16, sy16). 32-bit
- * only (no 64-bit libcalls in the freestanding build): the fractions are taken to 8 bits, so
- * every product fits in 32 bits. stride is the row stride, step the byte distance between
- * samples (1 for Y, 2 for interleaved chroma). (sw-1)<<16 fits in 32 bits for sw <= 1920. */
-static unsigned sample(const uint8_t *p, int stride, int step, int w, int h, int sx16, int sy16)
-{
-    int x = sx16 >> 16, y = sy16 >> 16;
-    unsigned fx = (sx16 >> 8) & 0xff, fy = (sy16 >> 8) & 0xff;
-    int x1 = x + 1 < w ? x + 1 : w - 1;
-    int y1 = y + 1 < h ? y + 1 : h - 1;
-    const uint8_t *r0 = p + (unsigned)y * stride;
-    const uint8_t *r1 = p + (unsigned)y1 * stride;
-    unsigned a = r0[x * step], b = r0[x1 * step], c = r1[x * step], d = r1[x1 * step];
-    unsigned top = a * (256 - fx) + b * fx;   /* <= 255*256, 16-bit */
-    unsigned bot = c * (256 - fx) + d * fx;
-
-    return (top * (256 - fy) + bot * fy) >> 16; /* <= 65280*256, 32-bit */
-}
 
 /* Shift-subtract divide: Cortex-A9 has no hardware divide, and the freestanding build links only
  * the libc names its stub lists, which do not include __aeabi_uidiv (the unit's libc.so.3 does
@@ -59,58 +43,77 @@ static unsigned udiv(unsigned n, unsigned d)
     return q;
 }
 
-static int ratio(int s, int d)
+/* Source step per destination sample in 16.16, the last sample landing on the last source one.
+ * (s-1)<<16 fits in 32 bits for s <= 1920. */
+static unsigned ratio(int s, int d)
 {
-    return s > 1 && d > 1 ? (int)udiv((unsigned)(s - 1) << 16, (unsigned)(d - 1)) : 0;
-}
-
-static void scale_plane(const uint8_t *src, int sstride, int step, int sw, int sh,
-                        uint8_t *dst, int dstride, int dw, int dh)
-{
-    int dx, dy, rx = ratio(sw, dw), ry = ratio(sh, dh);
-
-    for (dy = 0; dy < dh; dy++) {
-        int sy16 = dy * ry;
-        uint8_t *row = dst + (unsigned)dy * dstride;
-
-        for (dx = 0; dx < dw; dx++) {
-            row[dx * step] = (uint8_t)sample(src, sstride, step, sw, sh, dx * rx, sy16);
-        }
-    }
+    return s > 1 && d > 1 ? udiv((unsigned)(s - 1) << 16, (unsigned)(d - 1)) : 0;
 }
 
 /*
- * Scales an NV12 source (sw x sh, plane offsets inside one buffer at the given strides) down to
- * dw x dh into the destination NV12 planes. The destination chroma plane holds dw/2 x dh/2
- * interleaved Cb,Cr pairs at dst_cstride. All dimensions even.
+ * out = (a * (256 - f) + b * f + 128) >> 8 for n bytes, four at a time: two 16-bit lanes per
+ * mask, each at most 255 * 256 + 128, so no lane carries into the next. n is a multiple of 4.
  */
-void mcn_scale_nv12(const uint8_t *src_y, const uint8_t *src_c, int sstride, int sw, int sh,
-                    uint8_t *dst_y, uint8_t *dst_c, int dstride, int dw, int dh)
+static void blend(const uint8_t *a, const uint8_t *b, unsigned f, uint8_t *out, int n)
 {
-    scale_plane(src_y, sstride, 1, sw, sh, dst_y, dstride, dw, dh);
-    /* Cb at chroma byte 0, Cr at byte 1; each a (sw/2 x sh/2) plane, step 2. */
-    scale_plane(src_c + 0, sstride, 2, sw / 2, sh / 2, dst_c + 0, dstride, dw / 2, dh / 2);
-    scale_plane(src_c + 1, sstride, 2, sw / 2, sh / 2, dst_c + 1, dstride, dw / 2, dh / 2);
+    unsigned g = 256 - f;
+    int i;
+
+    for (i = 0; i < n; i += 4) {
+        uint32_t x, y, lo, hi;
+
+        __builtin_memcpy(&x, a + i, 4);
+        __builtin_memcpy(&y, b + i, 4);
+        lo = ((x & 0x00ff00ffu) * g + (y & 0x00ff00ffu) * f + 0x00800080u) >> 8;
+        hi = ((x >> 8) & 0x00ff00ffu) * g + ((y >> 8) & 0x00ff00ffu) * f + 0x00800080u;
+        x = (lo & 0x00ff00ffu) | (hi & 0xff00ff00u);
+        __builtin_memcpy(out + i, &x, 4);
+    }
 }
 
-void mcn_yuy2_to_nv12(const uint8_t *yuy2, int ystride, int w, int h, uint8_t *dst_y,
-                      uint8_t *dst_c, int dstride)
+/* The source row pair for output position sy (16.16) of a plane h rows high, blended into t. */
+static void vrow(const uint8_t *plane, int stride, int h, unsigned sy, uint8_t *t, int n)
 {
-    int x, y;
+    unsigned y = sy >> 16;
+    const uint8_t *a = plane + y * (unsigned)stride;
 
-    for (y = 0; y < h; y++) {
-        const uint8_t *p = yuy2 + (unsigned)y * ystride;
-        uint8_t *ry = dst_y + (unsigned)y * dstride;
-        uint8_t *rc = dst_c + (unsigned)(y / 2) * dstride;
+    blend(a, (int)y + 1 < h ? a + stride : a, (sy >> 8) & 0xff, t, n);
+}
 
-        for (x = 0; x < w; x += 2) {
-            ry[x] = p[0];
-            ry[x + 1] = p[2];
-            if ((y & 1) == 0) {
-                rc[x] = p[1];     /* Cb */
-                rc[x + 1] = p[3]; /* Cr */
-            }
-            p += 4;
-        }
+/* n samples step bytes apart out of the blended row t (one spare sample past its end). */
+static void hrow(const uint8_t *t, int step, uint8_t *out, int n, unsigned rx)
+{
+    unsigned sx = 0;
+    int i;
+
+    for (i = 0; i < n; i++, sx += rx) {
+        unsigned x = (sx >> 16) * (unsigned)step, f = (sx >> 8) & 0xff;
+
+        out[i * step] = (uint8_t)((t[x] * (256 - f) + t[x + step] * f + 128) >> 8);
+    }
+}
+
+void mcn_scale_nv12(const uint8_t *src_y, const uint8_t *src_c, int sstride, int sw, int sh,
+                    uint8_t *dst_y, uint8_t *dst_c, int dstride, int dw, int dh, uint8_t *work)
+{
+    uint8_t *t = work, *out = work + ((sw + 8 + 3) & ~3);
+    unsigned rx = ratio(sw, dw), ry = ratio(sh, dh);
+    unsigned rcx = ratio(sw / 2, dw / 2), rcy = ratio(sh / 2, dh / 2);
+    int i;
+
+    for (i = 0; i < dh; i++) {
+        vrow(src_y, sstride, sh, (unsigned)i * ry, t, sw);
+        t[sw] = t[sw - 1];
+        hrow(t, 1, out, dw, rx);
+        memcpy(dst_y + (unsigned)i * dstride, out, (size_t)dw);
+    }
+    /* Chroma rows are sw bytes too: sw/2 Cb,Cr pairs. */
+    for (i = 0; i < dh / 2; i++) {
+        vrow(src_c, sstride, sh / 2, (unsigned)i * rcy, t, sw);
+        t[sw] = t[sw - 2];
+        t[sw + 1] = t[sw - 1];
+        hrow(t, 2, out, dw / 2, rcx);         /* Cb */
+        hrow(t + 1, 2, out + 1, dw / 2, rcx); /* Cr */
+        memcpy(dst_c + (unsigned)i * dstride, out, (size_t)dw);
     }
 }

@@ -8,8 +8,10 @@
  * CarPlay 1:1 case. The VPU ABI is mcn_vpu_abi.h (recovered from the stock libmxcvpu.so.1 and
  * its MMF plug-ins). For Android Auto the encoder reads a 1024x384 rectangle straight out of
  * the decoded frame (geometry mcn_geom, src_x/src_y aligned), no pixel through the CPU. The
- * CarPlay zoom-out downscales on the GC320 (sal/scale_gc320.c) between decode and encode; the
- * CPU only repacks the blitter's YUY2 into NV12. Without the GC320 the transcoder gives up.
+ * CarPlay zoom-out downscales on the CPU between decode and encode (common/scale.c, bilinear),
+ * reading the decoded frame through a cached mapping invalidated before each frame, as the stock
+ * libOpenMAXAL GetFrame reads a frame the hardware wrote (msync MS_INVALIDATE). The zoom-out
+ * encoder runs with rate control at the stock cluster encoder's 5 Mbit/s.
  *
  * One transcoder at a time, owned by the token mcn_vpu_open returned; every call is serialised
  * by one mutex, so a receiver that ends late (stale token) never feeds, publishes into or closes
@@ -37,6 +39,13 @@
  * bitstreamMode 1; libmxcvpu vpu_DecGetOutputInfo 0x15158-0x1531c, mQbEMU research notes). */
 #define DEC_OK      0x01
 #define DEC_SHORT   0x10
+/* Zoom-out encoder rate: DisplayManager's own cluster encoder runs at 5 000 000 bit/s VBR
+ * (tsd.mibstd2.system.displaymanager parameters at 0x1aefbc, mQbEMU research notes). With a
+ * constant QP the transcoder's key frames had no bound, and a frame MostSink cuts loses its
+ * bottom on the cluster. */
+#define ENC_KBPS    5000
+/* Cached aliases are made over physical addresses that fit the 32-bit signed off_t of mmap. */
+#define PHYS_MAX    0x80000000u
 
 struct fns {
     pfn_vpu_Init Init;
@@ -80,6 +89,8 @@ struct vpu {
     int stride, alignh, dec_fb_n, enc_fb_n;
     vpu_mem_desc ring, slice, ps, stream, scaled; /* scaled: zoom-out NV12 encoder source */
     vpu_mem_desc dec_mem[MAX_DEC_FB], enc_mem[MAX_ENC_FB];
+    /* Zoom-out: cached read-only aliases of the decoded frames (0 = read the uncached one). */
+    uint8_t *dec_cached[MAX_DEC_FB];
     FrameBuffer dec_fb[MAX_DEC_FB], enc_fb[MAX_ENC_FB];
     uint8_t header[HEADER_MAX];
     unsigned header_len;
@@ -89,7 +100,7 @@ struct vpu {
 };
 
 /* Kinds of trouble, each logged once per transcoder: the car log must say which stage stops. */
-enum { N_INIT = 1, N_LOST = 2, N_DEC = 4, N_ENC = 8, N_NO_DISPLAY = 16 };
+enum { N_INIT = 1, N_LOST = 2, N_DEC = 4, N_ENC = 8, N_NO_DISPLAY = 16, N_UNCACHED = 32 };
 
 static struct vpu g;
 static pthread_mutex_t lock;
@@ -185,10 +196,11 @@ static void teardown(void)
         }
         g.dec = 0;
     }
-    if (g.geom.scale) {
-        mcn_scale_close(); /* every blit already waited for (SCREEN_WAIT_IDLE) */
-    }
     for (i = 0; i < g.dec_fb_n; i++) {
+        if (g.dec_cached[i]) {
+            munmap(g.dec_cached[i], (size_t)g.dec_mem[i].size);
+            g.dec_cached[i] = 0;
+        }
         phy_free(&g.dec_mem[i]);
     }
     for (i = 0; i < g.enc_fb_n; i++) {
@@ -407,6 +419,12 @@ static int bring_up(void)
         }
         g.dec_fb_n = i + 1;
         layout_nv12(&g.dec_fb[i], g.dec_mem[i].phy_addr, g.stride, g.alignh, i);
+        if (g.geom.scale && g.dec_mem[i].phy_addr < PHYS_MAX) {
+            void *p = mmap(0, (size_t)g.dec_mem[i].size, PROT_READ, MAP_PHYS | MAP_SHARED, -1,
+                           (off_t)g.dec_mem[i].phy_addr);
+
+            g.dec_cached[i] = p == MAP_FAILED ? 0 : (uint8_t *)p;
+        }
     }
     memset(&bi, 0, sizeof(bi));
     bi.avcSliceBufBase = g.slice.phy_addr;
@@ -425,7 +443,7 @@ static int bring_up(void)
     ep.picWidth = MCN_TC_CODED_W;
     ep.picHeight = MCN_TC_CODED_H;
     ep.frameRateInfo = MCN_CLUSTER_FPS;
-    ep.bitRate = 0;              /* constant QP: the map is simple, this keeps frames small */
+    ep.bitRate = g.geom.scale ? ENC_KBPS : 0; /* 0: constant QP (pr.quantParam) */
     ep.gopSize = 0;             /* key frames only on request (DisplayManager, want_idr) */
     ep.rcIntraQp = -1;
     ep.chromaInterleave = 1;    /* NV12, like the decoded frame */
@@ -520,26 +538,21 @@ static void encode_frame(int k)
     src.myIndex = g.enc_fb_n;
     if (g.geom.scale) {
         /* Zoom-out: shrink the whole decoded frame into the 1010x376 top-left of our 1024x384
-         * encoder source on the GC320. */
+         * encoder source. The cached alias is invalidated first: the VPU wrote the frame behind
+         * the CPU's caches. Without an alias (or if msync fails) the uncached frame is read,
+         * correct but slower. ponytail: plain C, about 7M instructions a frame (~7 ms on one
+         * A9 core); NEON when the unit's CPU load says so. */
+        static uint32_t work[(MCN_SCALE_WORK(1920, MCN_TC_VIS_W) + 3) / 4];
         unsigned dluma = (unsigned)MCN_TC_CODED_W * MCN_TC_CODED_H;
-        struct mcn_plane sp, dp;
+        uint8_t *dst = (uint8_t *)(uintptr_t)g.scaled.virt_uaddr;
+        const uint8_t *s = g.dec_cached[k];
 
-        sp.phys = g.dec_mem[k].phy_addr;
-        sp.virt = (uint8_t *)(uintptr_t)g.dec_mem[k].virt_uaddr;
-        sp.chroma_off = (int)luma;
-        sp.stride = g.stride;
-        sp.w = g.geom.src_w;
-        sp.h = g.geom.src_h;
-        dp.phys = g.scaled.phy_addr;
-        dp.virt = (uint8_t *)(uintptr_t)g.scaled.virt_uaddr;
-        dp.chroma_off = (int)dluma;
-        dp.stride = MCN_TC_CODED_W;
-        dp.w = MCN_TC_VIS_W;
-        dp.h = MCN_TC_VIS_H;
-        if (mcn_scale(&sp, &dp) != 0) {
-            give_up("no GC320 downscale");
-            return;
+        if (!s || msync(g.dec_cached[k], luma * 3u / 2u, MS_INVALIDATE) != 0) {
+            note(N_UNCACHED, "zoom-out reads the uncached frame (alias, msync)", s != 0, 0);
+            s = (const uint8_t *)(uintptr_t)g.dec_mem[k].virt_uaddr;
         }
+        mcn_scale_nv12(s, s + luma, g.stride, g.geom.src_w, g.geom.src_h, dst, dst + dluma,
+                       MCN_TC_CODED_W, MCN_TC_VIS_W, MCN_TC_VIS_H, (uint8_t *)work);
         src.strideY = MCN_TC_CODED_W;
         src.strideC = MCN_TC_CODED_W;
         src.bufY = g.scaled.phy_addr;
@@ -560,7 +573,7 @@ static void encode_frame(int k)
     memset(&pr, 0, sizeof(pr));
     pr.sourceFrame = &src;
     pr.forceIPicture = idr;
-    pr.quantParam = 24; /* used because bitRate is 0; low enough for a crisp map */
+    pr.quantParam = 24; /* used only while bitRate is 0; low enough for a crisp map */
     pr.enableAutoSkip = 0;
     memset(&eo, 0, sizeof(eo));
     n = g.f.EncStart(g.enc, &pr);

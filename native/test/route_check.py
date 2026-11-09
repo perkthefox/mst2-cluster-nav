@@ -46,8 +46,7 @@ lib.mcn_geom.restype = C.c_int
 lib.mcn_aa_sdr.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_int, C.POINTER(Geom)]
 lib.mcn_aa_sdr.restype = C.c_int
 lib.mcn_scale_nv12.argtypes = [C.c_char_p, C.c_char_p, C.c_int, C.c_int, C.c_int,
-                               C.c_void_p, C.c_void_p, C.c_int, C.c_int, C.c_int]
-lib.mcn_yuy2_to_nv12.argtypes = [C.c_char_p, C.c_int, C.c_int, C.c_int, C.c_void_p, C.c_void_p, C.c_int]
+                               C.c_void_p, C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_void_p]
 
 
 def tlv(key, data=b''):
@@ -467,39 +466,79 @@ class RouteCheck(unittest.TestCase):
                              (0, 0, z.req_w, z.req_h))
             self.assertEqual(z.scale, 1)
 
-    def test_scale_nv12_downscale(self):
-        # A flat NV12 frame must stay flat (every sample equals the constant), proving the
-        # bilinear taps sum to 1; a 1-D gradient must stay monotas a sanity check on direction.
-        sw, sh, dw, dh = 64, 32, 40, 20
-        sstride = sw
-        yflat = bytes([130]) * (sstride * sh)
-        cflat = bytes([90, 200]) * (sstride // 2 * (sh // 2))
+    @staticmethod
+    def scale(y, c, sstride, sw, sh, dw, dh):
+        """Runs mcn_scale_nv12 into dw-stride planes; checks it stays inside its work buffer."""
+        work_n = ((sw + 8 + 3) & ~3) + dw
+        work = C.create_string_buffer(work_n + 16)
+        C.memset(C.addressof(work) + work_n, 0xA5, 16)
         dy = C.create_string_buffer(dw * dh)
         dc = C.create_string_buffer(dw * dh // 2)
-        lib.mcn_scale_nv12(yflat, cflat, sstride, sw, sh, dy, dc, dw, dw, dh)
-        self.assertEqual(set(dy.raw[:dw * dh]), {130})
-        self.assertEqual(set(dc.raw[0:dw:2]), {90})    # Cb column
-        self.assertEqual(set(dc.raw[1:dw:2]), {200})   # Cr column
-        # horizontal gradient 0..63 in Y -> downscaled row still increases left to right
-        grad = bytearray()
-        for _ in range(sh):
-            grad += bytes(range(sw))
-        lib.mcn_scale_nv12(bytes(grad), cflat, sstride, sw, sh, dy, dc, dw, dw, dh)
-        row = list(dy.raw[:dw])
-        self.assertEqual(row, sorted(row))
-        self.assertLess(row[0], row[-1])
+        lib.mcn_scale_nv12(bytes(y), bytes(c), sstride, sw, sh, dy, dc, dw, dw, dh, work)
+        assert work.raw[work_n:work_n + 16] == b'\xa5' * 16, 'work buffer overrun'
+        return dy.raw[:dw * dh], dc.raw[:dw * dh // 2]
 
-    def test_yuy2_to_nv12(self):
-        # 4x2 YUY2 -> NV12: Y interleaved per pixel, Cb/Cr from even rows, 2x2 subsampled.
-        w, h, ys, ds = 4, 2, 8, 4
-        row = bytes([10, 100, 20, 200]) * (w // 2)  # Y0=10,U=100,Y1=20,V=200 repeated
-        yuy2 = row + bytes([30, 101, 40, 201]) * (w // 2)
-        dy = C.create_string_buffer(ds * h)
-        dc = C.create_string_buffer(ds * (h // 2))
-        lib.mcn_yuy2_to_nv12(yuy2, ys, w, h, dy, dc, ds)
-        self.assertEqual(list(dy.raw[0:4]), [10, 20, 10, 20])   # row0 luma
-        self.assertEqual(list(dy.raw[4:8]), [30, 40, 30, 40])   # row1 luma
-        self.assertEqual(list(dc.raw[0:4]), [100, 200, 100, 200])  # Cb,Cr from row0 only
+    @staticmethod
+    def ref_plane(src, stride, step, sw, sh, dw, dh):
+        """Integer model of the C: 16.16 steps, 8-bit fractions, vertical then horizontal."""
+        def ratio(a, b):
+            return ((a - 1) << 16) // (b - 1)
+        rx, ry = ratio(sw, dw), ratio(sh, dh)
+        out = []
+        for oy in range(dh):
+            sy = oy * ry
+            y, fy = sy >> 16, (sy >> 8) & 0xff
+            y1 = y + 1 if y + 1 < sh else y
+            t = [(src[y * stride + i * step] * (256 - fy) + src[y1 * stride + i * step] * fy
+                  + 128) >> 8 for i in range(sw)] + [None]
+            t[sw] = t[sw - 1]
+            row = []
+            for ox in range(dw):
+                sx = ox * rx
+                x, fx = sx >> 16, (sx >> 8) & 0xff
+                row.append((t[x] * (256 - fx) + t[x + 1] * fx + 128) >> 8)
+            out.append(row)
+        return out
+
+    def test_scale_nv12_flat_and_reference(self):
+        # A flat frame stays flat (taps sum to 1); random data equals the integer model exactly,
+        # which proves the four-bytes-per-multiply blend keeps its lanes apart.
+        import random
+        rnd = random.Random(7)
+        for sw, sh, dw, dh in ((80, 20, 64, 16), (96, 24, 64, 16), (1264, 8, 1010, 6)):
+            y, c = self.scale(bytes([130]) * (sw * sh), bytes([90, 200]) * (sw // 2 * sh // 2),
+                              sw, sw, sh, dw, dh)
+            self.assertEqual(set(y), {130})
+            self.assertEqual(set(c[0::2]), {90})
+            self.assertEqual(set(c[1::2]), {200})
+            ys = bytes(rnd.randrange(256) for _ in range(sw * sh))
+            cs = bytes(rnd.randrange(256) for _ in range(sw * sh // 2))
+            y, c = self.scale(ys, cs, sw, sw, sh, dw, dh)
+            want = self.ref_plane(ys, sw, 1, sw, sh, dw, dh)
+            self.assertEqual([list(y[r * dw:(r + 1) * dw]) for r in range(dh)], want)
+            for off in (0, 1):  # Cb, Cr
+                want = self.ref_plane(cs[off:], sw, 2, sw // 2, sh // 2, dw // 2, dh // 2)
+                got = [list(c[r * dw + off:(r + 1) * dw:2]) for r in range(dh // 2)]
+                self.assertEqual(got, want)
+
+    def test_scale_nv12_keeps_thin_lines(self):
+        # The zoom-out ratios (1.25, 1.5): a one-pixel line at any position survives at a quarter
+        # of its brightness or more. The GC320's 1x1-kernel point sampling dropped such lines
+        # (letters losing strokes in the car), so this is the property that matters.
+        for sw, dw in ((80, 64), (96, 64)):
+            sh, dh = sw // 4, dw // 4
+            cflat = bytes([128]) * (sw * sh // 2)
+            for x in range(sw):
+                src = bytearray(sw * sh)
+                for r in range(sh):
+                    src[r * sw + x] = 255
+                y, _ = self.scale(src, cflat, sw, sw, sh, dw, dh)
+                self.assertGreaterEqual(max(y[:dw]), 63, (sw, x))
+            for r in range(sh):
+                src = bytearray(sw * sh)
+                src[r * sw:(r + 1) * sw] = bytes([255]) * sw
+                y, _ = self.scale(src, cflat, sw, sw, sh, dw, dh)
+                self.assertGreaterEqual(max(y[0::dw]), 63, (sh, r))
 
     def test_aa_cluster_discovery_bytes(self):
         aa = self.geom(1)

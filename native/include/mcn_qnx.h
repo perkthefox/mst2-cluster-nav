@@ -138,6 +138,11 @@ void *readdir(DIR *dir);
 int closedir(DIR *dir);
 #define MCN_DIRENT_NAME(e) ((const char *)(e) + 0x14)
 void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
+int munmap(void *addr, size_t len);
+/* Invalidates the data cache over a range before the CPU reads what hardware wrote there: the
+ * stock libOpenMAXAL GetFrame calls msync(frame, stride * height, 4) after its blit (0x1dd3c). */
+#define MS_INVALIDATE 4
+int msync(void *addr, size_t len, int flags);
 
 /* libsocket.so.3 */
 int socket(int domain, int type, int protocol);
