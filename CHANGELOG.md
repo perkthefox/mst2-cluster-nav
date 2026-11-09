@@ -2,6 +2,14 @@
 
 **English** · [Русский](#русский)
 
+## Unreleased
+
+### Fixed
+- **Install from the source code** ("Code → Download ZIP" instead of the release's
+  `mst2-cluster-nav-<version>.zip`) stopped with only "MANIFEST is missing". It now lists what the
+  folder holds and says to download the package under the release's Assets; a card with a
+  complete package wins over one holding the source tree or an older copy.
+
 ## 1.1.0
 
 ### New
@@ -61,6 +69,14 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
 ---
 
 ## Русский
+
+## Не выпущено
+
+### Исправлено
+- **Install из исходников** («Code → Download ZIP» вместо `mst2-cluster-nav-<версия>.zip` из
+  релиза) останавливался только с «MANIFEST is missing». Теперь он перечисляет, что лежит в
+  папке, и говорит скачать пакет в разделе Assets релиза; карта с полным пакетом важнее карты с
+  исходниками или старой копией.
 
 ## 1.1.0
 

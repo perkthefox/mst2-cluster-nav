@@ -231,6 +231,23 @@ for damage in 'printf x >> "$C/libmcn_dm.so"' ': > "$C/libmcn_sal.so"; manifest'
         bad "install FAILED: damaged package accepted ($damage)"
 done
 
+# The repository's source tree (no MANIFEST, no libraries) in the first slot: Install takes the
+# package from the other card; with the source tree alone it stops and says what it found.
+source_tree() {
+    S="$W/media/mp000/custom/mst2-cluster-nav"
+    mkdir -p "$S"
+    cp "$PKG/runHMI.block" "$PKG/bundles.block" "$PKG/preload.list" "$S/"
+}
+unit
+source_tree
+[ "$(gem mcn_install.sh)" = ok ] && cmp -s "$W/lib/libmcn_sal.so" "$C/libmcn_sal.so" ||
+    bad "install FAILED: took the source tree over the package: $(cat "$W/out")"
+unit
+source_tree
+rm -r "$W/media/mp001/custom"
+[ "$(gem mcn_install.sh)" = failed ] && stock && grep -q "^preload.list$" "$W/out" &&
+    grep -q "(not 'Source code')" "$W/out" || bad "install FAILED: source tree not explained"
+
 # No backup on the card (full, write-protected): nothing changed.
 unit
 : > "$W/media/mp001/mst2-cluster-nav-backup"
