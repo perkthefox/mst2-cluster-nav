@@ -102,7 +102,7 @@ static int exists(const char *path)
 #endif
 #define CLOCK_WALL 0       /* CLOCK_REALTIME */
 #define CRASH_WINDOW_S 180 /* a busy mark younger than this at start: the last run died busy */
-#define STRIKES_OFF 2
+#define STRIKES_OFF 3 /* in a row: a reset loop gets there in minutes, quick switch-offs not */
 
 static int component_off, busy_count;
 static unsigned busy_ms;
@@ -154,6 +154,21 @@ static void state_write(const char *what, long v)
     }
 }
 
+/* One line in MCN_DIR/history, which survives a reset (runHMI.block rotates it, GEM shows it). */
+static void history(const char *what, long n)
+{
+    char line[96];
+    int fd = open(MCN_DIR "/history", O_WRONLY | O_CREAT | O_APPEND, 0666), len;
+
+    if (fd >= 0) {
+        len = snprintf(line, sizeof(line), "%ld %s: %s %ld\n", wall_s(), mcn_component, what, n);
+        if (len > 0 && len < (int)sizeof(line)) {
+            write(fd, line, (size_t)len);
+        }
+        close(fd);
+    }
+}
+
 void mcn_guard_init(void)
 {
     long busy, age, strikes;
@@ -170,7 +185,9 @@ void mcn_guard_init(void)
         strikes = state_read("strikes") + 1;
         state_write("strikes", strikes);
         mcn_log("the last run ended while busy (crash suspected)");
+        history("ended while busy, in a row:", strikes);
         if (strikes >= STRIKES_OFF) {
+            history("off after repeated crashes, strikes", strikes);
             state_write("off", 1);
             component_off = 1;
             mcn_log("off after repeated crashes; GEM Install turns it on again");

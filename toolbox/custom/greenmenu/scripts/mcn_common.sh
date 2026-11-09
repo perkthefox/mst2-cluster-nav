@@ -27,6 +27,11 @@ mcn_card() {
   return 1
 }
 
+# One line in the event history the guards keep across boots (runHMI.block rotates it).
+mcn_history() {
+  echo "$(/bin/date -t) gem: $*" >> $MCN/history
+}
+
 mcn_hmi_version() {
   sed -n 's/^VERSION=//p' $HMI_SH | head -1
 }

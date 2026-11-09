@@ -92,13 +92,25 @@ guard "$T/navignore.sh" 'touch var/enabled' y '' 'dual navigation line left with
 guard "$T/navignore-comment.sh" 'touch var/enabled jar/NavActiveIgnore.jar' y '' \
     'dual navigation line commented out'
 
-# HMI crash mark: a young one counts, two in a row turn the mod off; an old one (switched off
-# before settling) or a damaged one does not; a settled start (no mark) clears the count.
+# HMI crash mark: a young one counts, three in a row turn the mod off; an old one (switched off
+# before settling) or a damaged one does not; a settled start (no mark) clears the count. Every
+# count and the switch-off reach the history that survives the reset.
 guard "$T/mod.sh" 'touch var/enabled; echo 99950 > var/hmi-busy' y '' 'first unsettled start'
 [ "$(cat "$W/var/hmi-strikes")" = 1 ] || bad "guard FAILED: no strike"
-guard "$T/mod.sh" 'touch var/enabled; echo 99950 > var/hmi-busy; echo 1 > var/hmi-strikes' n \
-    'the HMI did not settle twice' 'second unsettled start'
+grep -q '^100000 hmi: start 1 in a row 50 s after one that did not settle$' "$W/var/history" ||
+    bad "guard FAILED: strike not in the history"
+guard "$T/mod.sh" 'touch var/enabled; echo 99950 > var/hmi-busy; echo 1 > var/hmi-strikes' y '' \
+    'second unsettled start'
+[ "$(cat "$W/var/hmi-strikes")" = 2 ] && [ -e "$W/var/enabled" ] || bad "guard FAILED: off at 2"
+guard "$T/mod.sh" 'touch var/enabled; echo 99950 > var/hmi-busy; echo 2 > var/hmi-strikes' n \
+    'the HMI did not settle 3 times in a row' 'third unsettled start'
 [ ! -e "$W/var/enabled" ] && [ ! -e "$W/var/hmi-busy" ] || bad "guard FAILED: still enabled"
+grep -q '^100000 hmi: the HMI did not settle 3 times in a row: off$' "$W/var/history" ||
+    bad "guard FAILED: switch-off not in the history"
+guard "$T/mod.sh" 'touch var/enabled; awk "BEGIN { for (i = 0; i < 61; i++) print i }" > var/history' \
+    y '' 'long history'
+[ "$(wc -l < "$W/var/history.old")" -eq 61 ] && [ ! -e "$W/var/history" ] ||
+    bad "guard FAILED: history not rotated"
 guard "$T/mod.sh" 'touch var/enabled; echo 1000 > var/hmi-busy; echo 1 > var/hmi-strikes' y '' \
     'switched off before settling, long ago'
 [ "$(cat "$W/var/hmi-strikes")" = 1 ] || bad "guard FAILED: old mark counted"
@@ -267,6 +279,16 @@ for l in '58,61,62' '61,58,62' '61,62,58' '61,580,58' '58'; do
     esac
     [ "$got" = "$want" ] || bad "bundles FAILED: $l -> $got"
 done
+
+# Arming a trial clears an old reason (it would read as the trial's own failure), and the
+# history keeps the install and the trial.
+unit
+[ "$(gem mcn_install.sh)" = ok ] || bad "trial FAILED: install $(cat "$W/out")"
+echo 'the HMI did not settle 3 times in a row' > "$W/var/off-reason"
+[ "$(gem mcn_set_trial.sh)" = ok ] && [ ! -e "$W/var/off-reason" ] && [ -e "$W/var/trial" ] ||
+    bad "trial FAILED: old reason kept"
+grep -q 'gem: installed mst2-cluster-nav test$' "$W/var/history" &&
+    grep -q 'gem: trial boot armed$' "$W/var/history" || bad "trial FAILED: history"
 
 # GEM runs a script by its path alone (no arguments, as in every Toolbox screen): each menu
 # entry names one packaged script, without spaces, and every wrapper script has its entry.

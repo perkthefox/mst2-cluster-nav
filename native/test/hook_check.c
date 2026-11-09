@@ -23,7 +23,7 @@ const char mcn_component[] = "check";
 #define NFILES 12
 static struct {
     char path[96];
-    char data[160];
+    char data[512];
     int len, pos, used;
 } fs[NFILES];
 static long now_s;
@@ -234,8 +234,12 @@ int main(void)
     mcn_guard_init();
     CHECK(value(strikes) == 1 && value(off) == -1 && mcn_active());
     put(busy, "1095\n");
-    mcn_guard_init(); /* the second in a row: this service's hooks off until Install */
-    CHECK(value(strikes) == 2 && value(off) == 1 && !mcn_active());
+    mcn_guard_init(); /* two quick switch-offs while busy in a row are not enough */
+    CHECK(value(strikes) == 2 && value(off) == -1 && mcn_active());
+    put(busy, "1098\n");
+    mcn_guard_init(); /* the third in a row: this service's hooks off until Install */
+    CHECK(value(strikes) == 3 && value(off) == 1 && !mcn_active());
+    CHECK(find(MCN_DIR "/history") >= 0); /* and the reason survives the reset */
     puts("hook: runHMI.sh block, kill switch, guard, enabled, trial taken once and never on its "
          "arming boot, nesting busy mark, crash strikes: ok");
     return 0;

@@ -202,7 +202,7 @@ MCN_EXPORT void mcn_init(void)
     }
     /*
      * Crash guard (common/hook.c): busy only around our own risky work, patch() and each
-     * identification build (build). mm-ipod dying inside, twice in a row, turns these hooks
+     * identification build (build). mm-ipod dying inside, three times in a row, turns these hooks
      * off until the next Install; SAL then still starts it, with this library inert. A plain
      * exit outside them is no strike. The driver's own exits (P0480T) are "Does not support
      * iAP2, exiting." in transport_recv_pkt (0x261fc: a USB device that never speaks iAP2) and

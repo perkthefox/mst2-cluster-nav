@@ -4,6 +4,13 @@
 MCN=/tsd/var/mst2-cluster-nav
 MCN_CPU=/tsd/etc/system/cpu.conf
 MCN_OFF=
+# What turned the mod off or counted against it, kept across boots for GEM Status and Save
+# diagnostics ("<seconds since 1970> <part>: <text>"; the native guards add theirs). The mod's
+# own log is in RAM and gone after a reset, which is exactly when the reason matters.
+MCN_H=$MCN/history
+if [ -s $MCN_H ] && [ $(/usr/bin/awk 'END { print NR }' $MCN_H) -gt 60 ]; then
+  /bin/mv -f $MCN_H $MCN_H.old
+fi
 for d in /media/mp00?; do
   [ -e $d/mst2-cluster-nav-disable ] && MCN_OFF="kill switch on $d"
 done
@@ -12,6 +19,7 @@ done
 if [ -e /dev/shmem/mst2-cluster-nav-on -a ! -e /dev/shmem/mst2-cluster-nav-hmi-ok ]; then
   MCN_OFF="the HMI restarted before the mod settled"
   /bin/rm -f $MCN/enabled $MCN/trial
+  echo "$(/bin/date -t) hmi: $MCN_OFF: off" >> $MCN_H
 fi
 # The toolbox's "dual navigation" patch replaces stock HMI classes, and its restore copies an old
 # runHMI.sh over this block; Install refuses it, this catches it added later. Active only with its
@@ -47,14 +55,15 @@ s#:/tsd/[a-z]*/mst2-cluster-nav/[^: ]*##g'
     /bin/mount -t qnx6 -o remount,ro /dev/hd0t177 /
   fi
   /bin/rm -f $MCN/enabled $MCN/trial
+  echo "$(/bin/date -t) hmi: $MCN_OFF: off" >> $MCN_H
 fi
 # HMI crash mark: made below when the mod goes into this HMI start, removed by the bundle once it
 # has settled (1 min). Found here, the last start with the mod did not settle: the HMI or the
 # whole unit went down first. That counts only when the mark is younger than 3 minutes (the unit
 # came straight back; a reset loop does) and the HMI-restart check above has not already turned
 # the mod off for it: a normal switch-off within the first minute leaves an old mark, and one
-# event never counts twice. Two such starts in a row turn the mod off; a settled start clears
-# the count.
+# event never counts twice. Three such starts in a row turn the mod off (a reset loop does that
+# within minutes; two quick switch-offs in a row must not); a settled start clears the count.
 if [ -e $MCN/hmi-busy ]; then
   MCN_T=
   read MCN_T < $MCN/hmi-busy
@@ -71,9 +80,12 @@ if [ -e $MCN/hmi-busy ]; then
     esac
     MCN_N=$((MCN_N + 1))
     echo $MCN_N > $MCN/hmi-strikes
-    if [ $MCN_N -ge 2 ]; then
-      MCN_OFF="the HMI did not settle twice"
+    echo "$MCN_NOW hmi: start $MCN_N in a row $((MCN_NOW - MCN_T)) s after one that did not settle" \
+      >> $MCN_H
+    if [ $MCN_N -ge 3 ]; then
+      MCN_OFF="the HMI did not settle 3 times in a row"
       /bin/rm -f $MCN/enabled $MCN/trial
+      echo "$MCN_NOW hmi: $MCN_OFF: off" >> $MCN_H
     fi
   fi
   /bin/rm -f $MCN/hmi-busy

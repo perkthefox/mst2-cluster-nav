@@ -94,6 +94,7 @@ for c in sal dm ipod; do
 done
 
 rm -f $MCN/enabled
+mcn_history "installed $(sed -n "1s/^# //p" $SRC/MANIFEST)"
 # The trial is the next boot's: the running hooks must not take it (native/include/mcn_hook.h).
 touch /dev/shmem/mst2-cluster-nav-armed $MCN/trial
 echo "Installed."

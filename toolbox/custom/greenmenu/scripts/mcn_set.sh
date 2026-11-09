@@ -15,15 +15,22 @@ case "$1" in
     if grep -q "$LIBDIR/" $CPU_CONF && mcn_installed; then
       touch $MCN/enabled
       rm -f $MCN/off-reason $MCN/hmi-busy $MCN/hmi-strikes
+      mcn_history "enabled permanently"
       echo "ENABLED PERMANENTLY: the mod loads on EVERY boot from now on."
     else
       echo "The mod is no longer registered in the stock files ($(cat $MCN/off-reason 2>/dev/null)). Use Install."
     fi
     ;;
-  disable) rm -f $MCN/enabled $MCN/trial; echo "Not loaded from the next boot." ;;
+  disable)
+    rm -f $MCN/enabled $MCN/trial
+    mcn_history "disabled"
+    echo "Not loaded from the next boot."
+    ;;
   trial)
-    rm -f $MCN/hmi-busy $MCN/hmi-strikes
+    # An old reason would read as if the trial had failed too.
+    rm -f $MCN/off-reason $MCN/hmi-busy $MCN/hmi-strikes
     touch /dev/shmem/mst2-cluster-nav-armed $MCN/trial
+    mcn_history "trial boot armed"
     echo "TRIAL BOOT armed: the NEXT boot loads the mod ONCE; then press 'ENABLE PERMANENTLY'."
     ;;
   # "map" (an older menu entry) always behaved as auto; SAL only tells "arrows" apart.
@@ -65,8 +72,8 @@ case "$1" in
         $c 2>&1
       done
       for f in mode fps keyframe scene display kbps zoom enabled \
-        trial off-reason hmi-busy hmi-strikes off-sal off-dm off-ipod strikes-sal strikes-dm \
-        strikes-ipod busy-sal busy-dm busy-ipod; do
+        trial off-reason history history.old hmi-busy hmi-strikes off-sal off-dm off-ipod \
+        strikes-sal strikes-dm strikes-ipod busy-sal busy-dm busy-ipod; do
         [ -e $MCN/$f ] && echo "### $f: $(cat $MCN/$f)"
       done
       echo "### runHMI.sh block: $(mcn_installed && echo yes || echo no)"
@@ -94,7 +101,12 @@ for c in sal dm ipod; do
   [ -e $MCN/off-$c ] && echo "$c hooks off after repeated crashes (Install turns them on again)"
 done
 [ -e $MCN/hmi-busy ] && echo "HMI with the mod not settled yet (or went down before settling)"
-[ -s $MCN/hmi-strikes ] && echo "HMI starts that did not settle: $(cat $MCN/hmi-strikes) (2 turn the mod off)"
+[ -s $MCN/hmi-strikes ] && echo "HMI starts that did not settle: $(cat $MCN/hmi-strikes) (3 in a row turn the mod off)"
+if [ -s $MCN/history ]; then
+  echo "recent events (seconds since 1970):"
+  awk '{ l[NR] = $0 } END { for (i = NR > 4 ? NR - 4 : 1; i <= NR; i++) print "  " l[i] }' \
+    $MCN/history
+fi
 echo "permanent: $([ -e $MCN/enabled ] && echo yes || echo no);" \
   "trial armed: $([ -e $MCN/trial ] && echo yes || echo no);" \
   "mode: $(sed 's/^map$/auto/' $MCN/mode 2>/dev/null); fps: $(cat $MCN/fps 2>/dev/null || echo 25);" \
