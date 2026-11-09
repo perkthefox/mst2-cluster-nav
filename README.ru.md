@@ -11,6 +11,9 @@
 
 [English](README.md) · **Русский**
 
+**[⬇️ Скачать последний релиз](../../releases/latest)** — `mst2-cluster-nav-<версия>.zip`
+в разделе *Assets*; «Code → Download ZIP» — это исходники, они не устанавливаются.
+
 <img src="docs/images/cluster.jpg" alt="Карта телефона в виде «Навигация» приборки Active Info Display" width="800">
 
 </div>
@@ -174,8 +177,9 @@ flowchart LR
 
 ## 📦 Установка
 
-**1. Возьмите пакет** — скачайте `mst2-cluster-nav-<версия>.zip` из
-[Releases](../../releases/latest) или соберите сами из чистой копии репозитория:
+**1. Возьмите пакет** — скачайте `mst2-cluster-nav-<версия>.zip` в разделе **Assets** на
+[Releases](../../releases/latest) (не «Source code»: в исходниках нет библиотек, и Install их не
+примет) или соберите сами из чистой копии репозитория:
 
 ```sh
 MIBHMI=<MIBHMI.jar из MIBHMI.jxe вашего блока> JAVAC=<javac из JDK 8> ./package.sh

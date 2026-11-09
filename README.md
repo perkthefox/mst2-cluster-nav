@@ -11,6 +11,9 @@ For VW Group cars with a **MIB2 Standard** head unit (TechniSat/Preh, "MST2") an
 
 **English** · [Русский](README.ru.md)
 
+**[⬇️ Download the latest release](../../releases/latest)** — `mst2-cluster-nav-<version>.zip`
+under *Assets*; "Code → Download ZIP" is the source code and does not install.
+
 <img src="docs/images/cluster.jpg" alt="The phone's map in the Active Info Display's navigation view" width="800">
 
 </div>
@@ -175,8 +178,9 @@ Deep dive: [architecture](docs/ARCHITECTURE.md) · [maneuvers](docs/MANEUVERS.md
 
 ## 📦 Install
 
-**1. Get the package** — download `mst2-cluster-nav-<version>.zip` from
-[Releases](../../releases/latest), or build it yourself from a clean checkout:
+**1. Get the package** — download `mst2-cluster-nav-<version>.zip` under **Assets** in
+[Releases](../../releases/latest) (not "Source code": the source tree has no libraries and
+Install refuses it), or build it yourself from a clean checkout:
 
 ```sh
 MIBHMI=<MIBHMI.jar from your unit's MIBHMI.jxe> JAVAC=<JDK 8 javac> ./package.sh
