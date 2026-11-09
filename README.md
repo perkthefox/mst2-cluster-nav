@@ -82,8 +82,8 @@ unit's own Android Auto library has but never offers the phone.
 <td valign="top">
 
 ### 🔭 More map around the car
-Optional CarPlay zoom-out (1.25× / 1.5×): the phone draws a bigger cluster map, and the unit's
-own video hardware brings it back to the cluster's size.
+Optional CarPlay zoom-out (1.25× / 1.5×): the phone draws a bigger cluster map, and the unit
+brings it back to the cluster's size with a smooth filter (thin streets and labels stay).
 
 </td>
 </tr>
@@ -124,7 +124,7 @@ Whatever happens, the unit falls back to stock — never to a black screen.
 | 🧪 **Trial boot** | After every install the mod loads **once**. Only you make it permanent. |
 | 💾 **SD-card kill switch** | A card with an empty file `mst2-cluster-nav-disable` keeps the mod out before the HMI starts and turns every part off within two seconds — hooks and HMI bundle alike. |
 | ✅ **Checked package** | Install verifies every file on the card against the package's manifest and refuses a damaged copy before anything on the unit is touched. |
-| 🩺 **Self-repair guard** | Runs before every HMI start; a missing or broken library, an HMI that restarts or a unit that resets before the mod settled, or a conflicting patch — and the mod takes itself out, telling you why. |
+| 🩺 **Self-repair guard** | Runs before every HMI start; a missing or broken library, an HMI that restarts, a unit that keeps resetting before the mod settled (3 times in a row), or a conflicting patch — and the mod takes itself out, telling you why. |
 | 💥 **Crash guards** | Every native part notices if it took its process down and switches itself off. |
 | 🔍 **Build checks** | On any firmware build the mod was not verified on, it changes nothing and stays stock. |
 | 📝 **Atomic edits + backups** | Three text files get a marked addition each, written atomically and checked line by line, with stock copies on the unit **and** on your card. Uninstall restores them byte for byte. |
@@ -161,7 +161,7 @@ flowchart LR
 | Toolbox package | `toolbox/` | installer, guard, Green Engineering Menu screen |
 
 Deep dive: [architecture](docs/ARCHITECTURE.md) · [maneuvers](docs/MANEUVERS.md) ·
-[lanes](docs/LANES.md) · [what's next](docs/ROADMAP.md)
+[lanes](docs/LANES.md) · [what's next](docs/ROADMAP.md) · [changelog](CHANGELOG.md)
 
 ## ✅ Compatibility
 
@@ -218,7 +218,7 @@ contains vendor files.
 | Map only / with the app's maneuver card | Map, route and car (default), or the app's own cluster UI. |
 | Own size and safe area | Calibrate from `mst2-cluster-nav-display.txt` on the card: `width_mm height_mm x y w h`. |
 | Zoom-out off / 1.25x / 1.5x | More CarPlay map around the car on the cluster (off by default). |
-| Status / Save diagnostics | State, settings and the last reason for switching off; logs for the card after a drive. The diagnostics contain your route, phone and network details — share them with care. |
+| Status / Save diagnostics | State, settings, the last reason for switching off and the recent events that survive a reset; logs for the card after a drive. The diagnostics contain your route, phone and network details — share them with care. |
 | Uninstall | Restores the stock files — reboot afterwards. |
 
 Changes apply from the next CarPlay connection or reboot, as the menu says.

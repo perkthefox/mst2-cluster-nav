@@ -58,17 +58,25 @@ runs stock.
   `/dev/shmem/mst2-cluster-nav-hmi-ok` from the bundle) → disabled. A unit that resets before
   the mod settled loses those RAM marks, so the guard also leaves `hmi-busy` on `/tsd/var` (the
   bundle removes it when it settles): found again within 3 minutes at the next HMI start, it
-  counts a strike, and two strikes disable the mod; a start that finds no mark clears them. The
-  reason goes to `off-reason`, shown by GEM Status. Either way the boot marks in RAM go too, so
-  the native hooks turn to pass-through within 2 s on this boot, not only from the next one.
+  counts a strike, and three strikes in a row disable the mod (a reset loop gets there within
+  minutes; two quick switch-offs in a row do not); a start that finds no mark clears them. The
+  reason goes to `off-reason`, shown by GEM Status (arming a trial clears it). Either way the
+  boot marks in RAM go too, so the native hooks turn to pass-through within 2 s on this boot, not
+  only from the next one.
 - **Crash guard in each native part.** While a hook does risky work (SAL: the phone's cluster
   stream and the Android Auto endpoints; DisplayManager: phone frames to the cluster; `mm-ipod`:
   patching the driver and each identification it builds) it keeps a time mark on `/tsd/var`,
   refreshed every minute and cleared at a clean end; nested work counts, the mark goes with the
   last. A mark younger than 3 minutes at the next start means the service died at work and the
-  unit came straight back; two such starts in a row turn that service's hooks off until the
+  unit came straight back; three such starts in a row turn that service's hooks off until the
   next Install. An ordinary switch-off, or `mm-ipod` ending because a phone was unplugged before
   identification, leaves no fresh mark.
+- **History.** Every strike and every switch-off, from the guard and from the native parts, and
+  every Install, Enable, Disable and trial from GEM, is appended to
+  `/tsd/var/mst2-cluster-nav/history` (`<seconds since 1970> <part>: <text>`; the guard moves it
+  to `history.old` past 60 lines). The mod's own log lives in RAM and is gone after a reset; the
+  history is what tells, after the fact, why the mod turned itself off. GEM Status shows its last
+  five lines, Save diagnostics both files.
 - **Build checks.** Every part that relies on offsets checks the build first and otherwise stays
   stock: SAL the exports of CarPlay plug-in 210.81 (before it reads any session field),
   DisplayManager the exports of `libOpenMAXAL.so.1` and the encoder sink's call site, `mm-ipod`
@@ -301,20 +309,35 @@ forwards it to the app like `showUI`. Apple Maps zooms its cluster map on it, Ya
 GEM can offer the phone a cluster screen 1.25× or 1.5× bigger (`/tsd/var/mst2-cluster-nav/zoom`,
 1000–1900 = factor × 1000): the app then draws more map around the car, and SAL turns the bigger
 picture back into the 1010×376 the cluster decodes — decoded on the i.MX6 VPU (`libmxcvpu.so.1`),
-scaled on the GC320 2D core through QNX Screen into an uncached scratch buffer, converted to NV12
-and encoded on the VPU as 1024×384 cropped to 1010×376 (`native/src/sal/vpu.c`,
-`scale_gc320.c`). The safe area scales with the screen, so the car marker stays where it was.
+scaled down on the CPU (bilinear, `native/src/common/scale.c`) and encoded on the VPU as 1024×384
+cropped to 1010×376, with rate control at 5 Mbit/s like DisplayManager's own cluster encoder
+(`native/src/sal/vpu.c`). The safe area scales with the screen, so the car marker stays where it
+was.
+
+The scale is on the CPU because the GC320 cannot filter through QNX Screen: its `gc320` module
+sets a 1×1 filter kernel on every blit whose source and destination sizes differ
+(`screen-gc320v0.so` `blit`, `gco2D_SetKernelSize(1, 1)` at all five call sites), i.e. it takes
+the nearest pixel and drops whole rows and columns — in the car (1.1 pre-release) letters lost
+strokes. Bilinear at these ratios (below 2) lets every source pixel weigh into the picture. The
+CPU reads the decoded frame through a cached second mapping of its physical memory, invalidated
+before each frame with `msync(MS_INVALIDATE)` as the stock `libOpenMAXAL` does before it reads a
+frame the hardware wrote; output rows are built in cached memory and copied to the encoder's
+uncached source in one burst each. About 7 million instructions per frame (one A9 core, a few
+milliseconds). Without the cached mapping it reads the uncached frame (logged once, slower).
+The constant QP the transcoder used before left key frames unbounded; a frame DisplayManager's
+MOST sink cuts loses its bottom rows on the cluster, which matches the green band seen in the car
+at the bottom of the zoomed map (not confirmed by a log).
 The factor is fixed when `/info` is answered and the same one is used for the session's stream;
 the decoder must deliver at least the rectangle that is scaled, or nothing is sent.
 
-There is no CPU fallback (a software scale reads uncached VPU memory, a few frames a second at
-best): if the VPU or the GC320 path cannot be set up, or gives up later, SAL publishes nothing
+If the VPU cannot be set up, or gives up later, SAL publishes nothing
 and the cluster keeps its stock map — never a stream the cluster cannot decode. One transcoder
 at a time, owned by the receiver that opened it (a stale owner's calls do nothing). The phone is
 asked for a key frame only after a loss: a frame too big for the input buffer, a decoder error,
 or a full input ring, which is then flushed and decoding restarts from the next key frame. The
 VPU firmware is found through `VPU_FW_PATH=/fw/vpu`, which SAL inherits from the unit's startup
-script like every service; the mod never touches SAL's environment. Not yet run in a car.
+script like every service; the mod never touches SAL's environment. The chain ran in a car with
+the 1.1 pre-release (GC320 scale); the CPU scale is not yet run in a car.
 
 ## CarPlay arrows (A + C)
 
