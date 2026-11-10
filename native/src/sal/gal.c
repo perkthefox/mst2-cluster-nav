@@ -71,8 +71,9 @@ static struct mcn_hook distance_hook = {
     "ERK31NavigationNextTurnDistanceEvent",
     GAL_LIB, 0, 0};
 
-static uint32_t nav[0x40 / 4];
-static uint32_t media[0x20 / 4];
+/* Objects of the receiver library (see vobj in gal_video.c): 8-byte aligned like its new(). */
+static uint32_t nav[0x40 / 4] __attribute__((aligned(8)));
+static uint32_t media[0x20 / 4] __attribute__((aligned(8)));
 static void *nav_vtable[10];   /* offset to top, typeinfo, 8 virtual functions */
 static void *media_vtable[10]; /* the same shape (0x15e790, ev_b0ebb5be) */
 static void *cb_vtable[5];     /* two destructors, status, turn, distance */

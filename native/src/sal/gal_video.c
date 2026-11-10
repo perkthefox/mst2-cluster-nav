@@ -116,8 +116,14 @@ static mutex_ctor_fn mutex_ctor;
 static closed_fn stock_closed;
 static opened_fn stock_opened;
 
-static uint8_t vobj[VS_SIZE];
-static uint8_t iobj[0x20];
+/*
+ * The library works on these as C++ objects: a Mutex at +0x4c (pthread mutex: the kernel's sync
+ * object, word-aligned or QNX takes an alignment fault in the kernel and shuts the unit down) and
+ * fields it reads with LDM/STRD. A uint8_t array is byte-aligned; vobj landed on an odd address
+ * and the first registration crashed the whole unit (mQbEMU, Android Auto session with the mod).
+ */
+static uint8_t vobj[VS_SIZE] __attribute__((aligned(8)));
+static uint8_t iobj[0x20] __attribute__((aligned(8)));
 static void *vs_vtable[VS_VT_SLOTS];
 static void *in_vtable[PEB_VT_SLOTS];
 static void *vcb_vtable[10];
