@@ -5,6 +5,7 @@
 /tsd/bin/displaymanager/tsd.mibstd2.system.displaymanager 7e593ce430f00a00
 /usr/lib/libOpenMAXAL.so.1 3f446e67d02f0300
 /tsd/lib/common/libtsd.common.so 09b4c50794110c00
+/tsd/lib/connectivitycommon/libtsd.connectivity.common.so 87923d0754380200
 /tsd/bin/sal/tsd.mibstd2.sal.main 044244b73ca64600
 /tsd/lib/sal/carplay/libext.apple.carplay.airplay.so d1bba962ec310300
 /tsd/lib/sal/carplay/libext.apple.carplay.support.so 338e3999046d0a00

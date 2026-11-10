@@ -17,7 +17,7 @@ boots normally on mQbEMU and in another car). This release makes sure no such lo
 - **The SD kill switch unloads:** a card with `mst2-cluster-nav-disable` now takes the libraries
   out of `cpu.conf` (also when it is put in during the first two minutes after power-on), not
   only switches the mod off; Install puts them back.
-- **Firmware check:** Install compares the 11 firmware files the hooks touch with
+- **Firmware check:** Install compares the 12 firmware files the hooks touch with
   MST2_EU_SK_ZR_P0480T and refuses any other build, and a `cpu.conf` another tool has edited,
   before anything is changed.
 - **Dual navigation's Disable keeps the mod's guard:** the toolbox patch copies `runHMI.sh` to
@@ -43,6 +43,11 @@ boots normally on mQbEMU and in another car). This release makes sure no such lo
   includes both: after a freeze, reboot and save.
 
 ### Fixed
+- **Boot-loop breaker, after review:** each boot's count is synced to disk at once (a kernel
+  fault or a hang skips the stock shutdown and would lose it); Install clears the count; a
+  kill-switch card left in no longer remounts and rewrites a `cpu.conf` the mod is already out
+  of; the firmware check also covers `libtsd.connectivity.common.so`, which the Android Auto log
+  hooks depend on.
 - **Install could reset the unit** when the card's `custom/mst2-cluster-nav` had no
   `preload.list`: the unit's awk (GNU Awk 3.1.5) crashes on a file it cannot open, and the unit
   resets on any crashed process. Every awk on the unit now reads standard input. Found on mQbEMU
@@ -134,7 +139,7 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
 - **Выключатель на SD выгружает мод:** карта с `mst2-cluster-nav-disable` теперь убирает
   библиотеки из `cpu.conf` (и если её вставить в первые две минуты после включения), а не
   только выключает мод; Install возвращает их.
-- **Проверка прошивки:** Install сверяет 11 файлов прошивки, которые трогают хуки, с
+- **Проверка прошивки:** Install сверяет 12 файлов прошивки, которые трогают хуки, с
   MST2_EU_SK_ZR_P0480T и отказывается от любой другой сборки и от `cpu.conf`, изменённого другим
   инструментом, ничего не тронув.
 - **Выключение двойной навигации больше не снимает сторожа мода:** патч тулбокса при первом
@@ -160,6 +165,11 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
   оба: после зависания перезагрузить и сохранить.
 
 ### Исправлено
+- **Защита от цикла перезагрузок, после ревью:** счётчик каждой загрузки сразу пишется на
+  носитель (сбой ядра или зависание проходят мимо штатного выключения и потеряли бы его); Install
+  обнуляет счётчик; карта-выключатель, оставленная в слоте, больше не перемонтирует раздел и не
+  переписывает `cpu.conf`, из которого мод уже убран; проверка прошивки охватывает и
+  `libtsd.connectivity.common.so`, от которой зависят хуки журнала Android Auto.
 - **Install мог перезагрузить блок**, если в `custom/mst2-cluster-nav` на карте нет
   `preload.list`: awk блока (GNU Awk 3.1.5) падает на файле, который не может открыть, а блок
   перезагружается при падении любого процесса. Теперь каждый awk на блоке читает стандартный ввод.

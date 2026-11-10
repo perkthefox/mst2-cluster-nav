@@ -186,6 +186,10 @@ guard "$T/mod.sh" "UP=n; printf '%s\\n' 'service iMX6.SAL' > cpu.conf" n '' 'not
 guard "$T/mod.sh" 'KILL_LATER=$W/media/mp000; MOUNT_OK=y' n \
     "kill switch on $T/w/media/mp000: removed from cpu.conf" 'kill-switch card mounted later'
 [ "$(cat "$W/cpu.conf")" = "$STRIPPED" ] || bad "guard FAILED: late kill switch left cpu.conf"
+guard "$T/mod.sh" "touch media/mp000/mst2-cluster-nav-disable; MOUNT_OK=y; printf '%s\\n' 'service iMX6.SAL' > cpu.conf; cp cpu.conf cpu.before" \
+    n '' 'kill switch, nothing preloaded'
+cmp -s "$W/cpu.conf" "$W/cpu.before" && ! grep -q 'kill switch' "$W/var/history" 2>/dev/null ||
+    bad "guard FAILED: kill switch rewrote a cpu.conf without us"
 
 # The unit's awk (GNU Awk 3.1.5) crashes on an input file it cannot open, and the unit resets on
 # any crashed process: every awk program on the unit reads stdin ("}' < file", a pipe, $(...)).
@@ -268,7 +272,11 @@ printf 123456789 > "$T/crc"
     bad "install FAILED: mcn_sum is not the gzip trailer"
 
 unit
+mkdir -p "$W/var"
+echo 2 > "$W/var/boot-loops"
+echo 99970 > "$W/var/boot-up"
 [ "$(gem mcn_install.sh)" = ok ] || bad "install FAILED: $(cat "$W/out")"
+[ ! -e "$W/var/boot-loops" ] && [ ! -e "$W/var/boot-up" ] || bad "install FAILED: boot-loop count kept"
 grep -q '^# >>> mst2-cluster-nav' "$W/runHMI.sh" && [ -e "$W/var/trial" ] &&
     grep -q '^Bundle.Startup.Lateload = 61,62,75,58$' "$W/bundles.properties" &&
     grep -q "^   envar LD_PRELOAD /lib/libmmappriofix.so.1:$W/lib/libmcn_dm.so\$" "$W/cpu.conf" &&

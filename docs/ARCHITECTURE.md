@@ -59,10 +59,10 @@ that still run while the libraries are loaded do nothing at all unless the mod i
   is on, and DisplayManager hands the encoder's frames straight through without looking at them
   while it is off.
 - **Firmware check at Install.** The hooks depend on exact builds: hooked functions, fixed
-  offsets and call sites. `firmware.list` names the 11 files they touch (DisplayManager, SAL,
-  `libOpenMAXAL`, `libtsd.common`, the CarPlay and Android Auto plug-ins, `libmxcvpu`,
-  `libiap2client`, `mm-ipod` and its iAP2 driver) with the check value of `MST2_EU_SK_ZR_P0480T`,
-  and Install stops, changing nothing, if any differs. It also refuses a `cpu.conf` whose
+  offsets and call sites. `firmware.list` names the 12 files they touch (DisplayManager, SAL,
+  `libOpenMAXAL`, `libtsd.common`, `libtsd.connectivity.common`, the CarPlay and Android Auto
+  plug-ins, `libmxcvpu`, `libiap2client`, `mm-ipod` and its iAP2 driver) with the check value of
+  `MST2_EU_SK_ZR_P0480T`, and Install stops, changing nothing, if any differs. It also refuses a `cpu.conf` whose
   `LD_PRELOAD` lines are not as the firmware writes them (a carriage return or a trailing blank
   would join our entry to the stock library before it).
 - **The unit's own tools.** A crashed process resets the whole unit (`mcproot`: "Process crash

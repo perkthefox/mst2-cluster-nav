@@ -95,7 +95,9 @@ if ! mcn_installed || ! grep -q "^Bundle\.Startup\.Lateload = .*,$BUNDLE_ID\$" $
   fi
   exit 1
 fi
-rm -f $MCN/off-reason $MCN/hmi-busy $MCN/hmi-strikes
+# The boot-loop counters too: a count left from before (an unload that failed) would take the
+# fresh install out again on the next boot.
+rm -f $MCN/off-reason $MCN/hmi-busy $MCN/hmi-strikes $MCN/boot-up $MCN/boot-loops
 for c in sal dm ipod; do
   rm -f $MCN/off-$c $MCN/strikes-$c $MCN/busy-$c
 done

@@ -130,7 +130,7 @@ Whatever happens, the unit falls back to stock — never to a black screen.
 | 🔁 **Boot-loop breaker** | Runs first on every boot, whether the mod is on or off: if the unit restarts four times in a row without staying up two minutes, the mod takes its libraries out of the start-up list by itself. |
 | 🩺 **Self-repair guard** | Runs before every HMI start; a missing or broken library, an HMI that restarts, a unit that keeps resetting before the mod settled (3 times in a row), or a conflicting patch — and the mod takes itself out, telling you why. |
 | 💥 **Crash guards** | Every native part notices if it took its process down and switches itself off. |
-| 🔍 **Firmware check** | Install compares the 11 firmware files the hooks touch with the build the mod was made for and refuses any other, before anything is changed. Each hook checks its build again at run time and otherwise stays stock. |
+| 🔍 **Firmware check** | Install compares the 12 firmware files the hooks touch with the build the mod was made for and refuses any other, before anything is changed. Each hook checks its build again at run time and otherwise stays stock. |
 | 📝 **Atomic edits + backups** | Three text files get a marked addition each, written atomically and checked line by line, with stock copies on the unit **and** on your card. Uninstall restores them byte for byte. |
 
 ## 🔧 How it works

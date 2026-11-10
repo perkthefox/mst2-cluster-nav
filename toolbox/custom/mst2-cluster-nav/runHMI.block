@@ -80,6 +80,8 @@ if [ ! -e /dev/shmem/mst2-cluster-nav-booted ] && mcn_preloaded; then
     /bin/rm -f $MCN/boot-loops
   fi
   echo "$MCN_NOW" > $MCN/boot-up
+  # On disk now: a reset that skips the stock shutdown (kernel fault, hang) must not lose the count.
+  /bin/sync
 fi
 # awk reads stdin only: the unit's GNU Awk 3.1.5 crashes on a file it cannot open, and a crashed
 # process resets the unit (mcn_common.sh).
@@ -118,7 +120,8 @@ for MCN_F in $(/usr/bin/sed -n 's#.*\(/tsd/[a-z]*/mst2-cluster-nav/[^: ]*\).*#\1
 done
 if [ -n "$MCN_UNLOAD" ]; then
   MCN_OFF="$MCN_UNLOAD"
-  mcn_unpreload "$MCN_UNLOAD"
+  # Nothing preloaded (a kill-switch card left in): no remount, no rewrite, no history line.
+  mcn_preloaded && mcn_unpreload "$MCN_UNLOAD"
 fi
 # Still preloaded: the watcher, once per boot. It takes our libraries out as soon as a
 # kill-switch card is mounted, and clears boot-up once this boot has stayed up MCN_UP_S.
