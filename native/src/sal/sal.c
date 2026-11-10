@@ -427,10 +427,15 @@ MCN_EXPORT void AirPlayReceiverSessionTearDown(void *session, CFDictionaryRef re
 
 const char mcn_component[] = "sal";
 
+int mcn_own_process(void)
+{
+    /* Exported by tsd.mibstd2.sal.main and by no other file of the firmware. */
+    return mcn_main_exports("_ZN3tsd3sal3gal3aoa16AoaDeviceManager18deviceDisconnectedEv");
+}
+
+/* DT_INIT, in SAL and in every child that inherits the preload: locks only, no output. */
 MCN_EXPORT void mcn_init(void)
 {
-    mcn_log("SAL hooks loaded");
-    mcn_guard_init();
     mcn_stream_init();
     mcn_vpu_init();
     mcn_lab_start();

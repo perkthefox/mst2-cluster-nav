@@ -67,6 +67,15 @@ mcn_check_unit() {
       return 1
     fi
   done
+  # Our entry is appended to a service's LD_PRELOAD line as it stands: a carriage return or a
+  # blank at its end (another tool's edit) would join it to the stock library before it, and
+  # the service would not start. Stock has every such line as "   envar LD_PRELOAD <list>".
+  if grep -q "$(printf '\r')" $CPU_CONF ||
+      grep 'LD_PRELOAD' $CPU_CONF | grep -v '^   envar LD_PRELOAD [^ 	]*$' > /dev/null; then
+    echo "Aborted: $CPU_CONF is not as the firmware has it (line ends or LD_PRELOAD lines were"
+    echo "edited by another tool); nothing was changed."
+    return 1
+  fi
   return 0
 }
 
@@ -165,6 +174,28 @@ mcn_verify_card() {
       bad=1
     fi
   done
+  return $bad
+}
+
+# Every file the card's firmware.list ($1) names is on the unit and matches its check value: the
+# native hooks are made for that build, and one that does not fit crashes DisplayManager or SAL,
+# which resets the unit on every boot. Prints what differs; changes nothing.
+mcn_check_firmware() {
+  if [ ! -s "$1" ]; then
+    echo "$1 is missing."
+    return 1
+  fi
+  bad=0
+  while read f sum; do
+    case "$f" in ''|'#'*) continue ;; esac
+    if [ ! -f "$f" ]; then
+      echo "$f is not on this unit."
+      bad=1
+    elif [ "$(mcn_sum "$f")" != "$sum" ]; then
+      echo "$f is another build."
+      bad=1
+    fi
+  done < "$1"
   return $bad
 }
 

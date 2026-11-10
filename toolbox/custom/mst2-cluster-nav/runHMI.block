@@ -8,11 +8,86 @@ MCN_OFF=
 # diagnostics ("<seconds since 1970> <part>: <text>"; the native guards add theirs). The mod's
 # own log is in RAM and gone after a reset, which is exactly when the reason matters.
 MCN_H=$MCN/history
+MCN_NOW=$(/bin/date -t)
+case "$MCN_NOW" in
+  ''|*[!0-9]*) MCN_NOW= ;;
+esac
+# Our libraries leave cpu.conf: the one way out of a crash in them, which resets the whole unit
+# (DisplayManager and SAL are "restart global"), whatever the mod's state, since cpu.conf preloads
+# them on every boot. The new cpu.conf keeps the old one's mode, must equal the old one with our
+# entries removed, and reaches the disk before the partition goes back to read-only. Install puts
+# them back. $1: why.
+mcn_unpreload() {
+  if /bin/mount -t qnx6 -o remount,rw /dev/hd0t177 /; then
+    MCN_SED='\#^   envar LD_PRELOAD /tsd/[a-z]*/mst2-cluster-nav/[^:]*$#d
+s#:/tsd/[a-z]*/mst2-cluster-nav/[^: ]*##g'
+    /bin/cp -p $MCN_CPU $MCN_CPU.mcn && /usr/bin/sed -e "$MCN_SED" $MCN_CPU > $MCN_CPU.mcn &&
+      /usr/bin/sed -e "$MCN_SED" $MCN_CPU > /dev/shmem/mst2-cluster-nav-cpu.conf &&
+      /usr/bin/cmp -s $MCN_CPU.mcn /dev/shmem/mst2-cluster-nav-cpu.conf &&
+      [ -s $MCN_CPU.mcn ] && /bin/mv -f $MCN_CPU.mcn $MCN_CPU
+    /bin/rm -f $MCN_CPU.mcn /dev/shmem/mst2-cluster-nav-cpu.conf
+    /bin/sync
+    /bin/mount -t qnx6 -o remount,ro /dev/hd0t177 /
+  fi
+  /bin/rm -f $MCN/enabled $MCN/trial
+  if mcn_preloaded; then
+    MCN_R="$1: could not be removed from cpu.conf"
+  else
+    MCN_R="$1: removed from cpu.conf"
+    /bin/rm -f $MCN/boot-up $MCN/boot-loops
+  fi
+  echo "$MCN_R" > $MCN/off-reason
+  echo "$(/bin/date -t) hmi: $MCN_R, off" >> $MCN_H
+  # Off for the native hooks still running in this boot, from their next check (2 s).
+  /usr/bin/touch /dev/shmem/mst2-cluster-nav-off
+}
+mcn_preloaded() {
+  /usr/bin/grep -q '/tsd/[a-z]*/mst2-cluster-nav/' $MCN_CPU
+}
+# Boot-loop breaker, first so that it runs even if the unit goes down a moment later. Each boot
+# (not an HMI restart within one: the RAM mark) while cpu.conf preloads us leaves boot-up; the
+# watcher below removes it once this boot has stayed up MCN_UP_S, counted by sleep, not by the
+# clock. Found at a boot, the last one did not stay up: the fourth such boot in a row takes our
+# libraries out of cpu.conf. A last start more than MCN_LOOP_S ago by the clock (boot-up holds
+# its time) was a normal short drive, not a loop: the count starts again.
+MCN_UP_S=120
+MCN_LOOP_S=600
+MCN_UNLOAD=
+MCN_BOOT=
+if [ ! -e /dev/shmem/mst2-cluster-nav-booted ] && mcn_preloaded; then
+  MCN_BOOT=1
+  /usr/bin/touch /dev/shmem/mst2-cluster-nav-booted
+  if [ -e $MCN/boot-up ]; then
+    MCN_T=
+    read MCN_T < $MCN/boot-up
+    case "$MCN_T" in
+      ''|*[!0-9]*) MCN_T= ;;
+    esac
+    if [ -n "$MCN_T" -a -n "$MCN_NOW" ] && [ $((MCN_NOW - MCN_T)) -ge $MCN_LOOP_S ]; then
+      /bin/rm -f $MCN/boot-loops
+    else
+      MCN_N=0
+      [ -e $MCN/boot-loops ] && read MCN_N < $MCN/boot-loops
+      case "$MCN_N" in
+        ''|*[!0-9]*) MCN_N=0 ;;
+      esac
+      MCN_N=$((MCN_N + 1))
+      echo $MCN_N > $MCN/boot-loops
+      echo "$MCN_NOW hmi: boot $MCN_N in a row after one that did not stay up $MCN_UP_S s" >> $MCN_H
+      [ $MCN_N -ge 3 ] && MCN_UNLOAD="the unit restarted 4 times in a row within $MCN_UP_S s"
+    fi
+  else
+    /bin/rm -f $MCN/boot-loops
+  fi
+  echo "$MCN_NOW" > $MCN/boot-up
+fi
 if [ -s $MCN_H ] && [ $(/usr/bin/awk 'END { print NR }' $MCN_H) -gt 60 ]; then
   /bin/mv -f $MCN_H $MCN_H.old
 fi
+# SD card kill switch: a card in the slot at power-on is mounted by now (mQbEMU); the watcher
+# below catches one put in later.
 for d in /media/mp00?; do
-  [ -e $d/mst2-cluster-nav-disable ] && MCN_OFF="kill switch on $d"
+  [ -e $d/mst2-cluster-nav-disable ] && MCN_UNLOAD="kill switch on $d"
 done
 # The HMI starts again on this boot, and the mod was in it but had not settled (1 min): the mod
 # may be the cause, so it stays off until it is enabled again in GEM.
@@ -31,31 +106,36 @@ if [ -e /tsd/hmi/HMI/jar/NavActiveIgnore.jar ] &&
 fi
 # A library in LD_PRELOAD that cannot be loaded keeps SAL or DisplayManager from starting (the
 # unit then resets): if one is missing, empty or not an ARM shared library, take every one of
-# ours out of cpu.conf. The new cpu.conf keeps the old one's mode, must equal the old one with our
-# entries removed, and reaches the disk before the partition goes back to read-only.
-MCN_FIX=
+# ours out of cpu.conf.
 for MCN_F in $(/usr/bin/sed -n 's#.*\(/tsd/[a-z]*/mst2-cluster-nav/[^: ]*\).*#\1#p' $MCN_CPU); do
   case $(/usr/bin/od -A n -t x1 -N 20 $MCN_F 2>/dev/null |
       /usr/bin/awk '{ for (i = 1; i <= NF; i++) s = s $i } END { print s }') in
     7f454c460101????????????????????03002800) ;;
-    *) MCN_FIX="$MCN_F missing, empty or not an ARM library" ;;
+    *) MCN_UNLOAD="$MCN_F missing, empty or not an ARM library" ;;
   esac
 done
-if [ -n "$MCN_FIX" ]; then
-  MCN_OFF="$MCN_FIX: removed from cpu.conf"
-  if /bin/mount -t qnx6 -o remount,rw /dev/hd0t177 /; then
-    MCN_SED='\#^   envar LD_PRELOAD /tsd/[a-z]*/mst2-cluster-nav/[^:]*$#d
-s#:/tsd/[a-z]*/mst2-cluster-nav/[^: ]*##g'
-    /bin/cp -p $MCN_CPU $MCN_CPU.mcn && /usr/bin/sed -e "$MCN_SED" $MCN_CPU > $MCN_CPU.mcn &&
-      /usr/bin/sed -e "$MCN_SED" $MCN_CPU > /dev/shmem/mst2-cluster-nav-cpu.conf &&
-      /usr/bin/cmp -s $MCN_CPU.mcn /dev/shmem/mst2-cluster-nav-cpu.conf &&
-      [ -s $MCN_CPU.mcn ] && /bin/mv -f $MCN_CPU.mcn $MCN_CPU
-    /bin/rm -f $MCN_CPU.mcn /dev/shmem/mst2-cluster-nav-cpu.conf
-    /bin/sync
-    /bin/mount -t qnx6 -o remount,ro /dev/hd0t177 /
-  fi
-  /bin/rm -f $MCN/enabled $MCN/trial
-  echo "$(/bin/date -t) hmi: $MCN_OFF: off" >> $MCN_H
+if [ -n "$MCN_UNLOAD" ]; then
+  MCN_OFF="$MCN_UNLOAD"
+  mcn_unpreload "$MCN_UNLOAD"
+fi
+# Still preloaded: the watcher, once per boot. It takes our libraries out as soon as a
+# kill-switch card is mounted, and clears boot-up once this boot has stayed up MCN_UP_S.
+# Detached; its output is not the HMI's.
+if [ -n "$MCN_BOOT" -a -z "$MCN_UNLOAD" ] && mcn_preloaded; then
+  (
+    MCN_I=0
+    while [ $MCN_I -lt $MCN_UP_S ]; do
+      for d in /media/mp00?; do
+        if [ -e $d/mst2-cluster-nav-disable ]; then
+          mcn_unpreload "kill switch on $d"
+          exit 0
+        fi
+      done
+      /usr/bin/sleep 2
+      MCN_I=$((MCN_I + 2))
+    done
+    /bin/rm -f $MCN/boot-up $MCN/boot-loops
+  ) < /dev/null > /dev/null 2>&1 &
 fi
 # HMI crash mark: made below when the mod goes into this HMI start, removed by the bundle once it
 # has settled (1 min). Found here, the last start with the mod did not settle: the HMI or the
@@ -67,8 +147,7 @@ fi
 if [ -e $MCN/hmi-busy ]; then
   MCN_T=
   read MCN_T < $MCN/hmi-busy
-  MCN_NOW=$(/bin/date -t)
-  case "$MCN_T$MCN_NOW" in
+  case "$MCN_T" in
     *[!0-9]*) MCN_T= ;;
   esac
   if [ -z "$MCN_OFF" -a -n "$MCN_T" -a -n "$MCN_NOW" ] && [ $((MCN_NOW - MCN_T)) -ge 0 ] &&
@@ -80,8 +159,8 @@ if [ -e $MCN/hmi-busy ]; then
     esac
     MCN_N=$((MCN_N + 1))
     echo $MCN_N > $MCN/hmi-strikes
-    echo "$MCN_NOW hmi: start $MCN_N in a row $((MCN_NOW - MCN_T)) s after one that did not settle" \
-      >> $MCN_H
+    MCN_A=$((MCN_NOW - MCN_T))
+    echo "$MCN_NOW hmi: start $MCN_N in a row $MCN_A s after one that did not settle" >> $MCN_H
     if [ $MCN_N -ge 3 ]; then
       MCN_OFF="the HMI did not settle 3 times in a row"
       /bin/rm -f $MCN/enabled $MCN/trial
@@ -94,7 +173,7 @@ else
 fi
 if [ -n "$MCN_OFF" ]; then
   echo "mst2-cluster-nav: off ($MCN_OFF)"
-  echo "$MCN_OFF" > $MCN/off-reason 2>/dev/null
+  [ -n "$MCN_UNLOAD" ] || echo "$MCN_OFF" > $MCN/off-reason 2>/dev/null
   # Off for the native hooks too, from their next check (2 s), not only from the next boot.
   /usr/bin/touch /dev/shmem/mst2-cluster-nav-off
   /bin/rm -f /dev/shmem/mst2-cluster-nav-on /dev/shmem/mst2-cluster-nav-trial

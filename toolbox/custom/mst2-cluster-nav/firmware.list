@@ -1,0 +1,15 @@
+# The unit's files the native hooks are built against: hooked functions, fixed offsets and
+# call sites of MIB2 Standard MST2_EU_SK_ZR_P0480T. Install compares each check value (mcn_sum:
+# gzip's trailer, CRC-32 and length) and stops, changing nothing, on any other build: a hook in
+# DisplayManager or SAL that does not fit resets the unit on every boot.
+/tsd/bin/displaymanager/tsd.mibstd2.system.displaymanager 7e593ce430f00a00
+/usr/lib/libOpenMAXAL.so.1 3f446e67d02f0300
+/tsd/lib/common/libtsd.common.so 09b4c50794110c00
+/tsd/bin/sal/tsd.mibstd2.sal.main 044244b73ca64600
+/tsd/lib/sal/carplay/libext.apple.carplay.airplay.so d1bba962ec310300
+/tsd/lib/sal/carplay/libext.apple.carplay.support.so 338e3999046d0a00
+/tsd/lib/sal/gal/libext.google.gal.receiver.so d06c949f483a1600
+/usr/lib/libmxcvpu.so.1 93550fa4a1d80200
+/usr/lib/libiap2client.so.1 db13f7e02b580000
+/usr/sbin/mm-ipod ace1ba805d9e0000
+/lib/dll/ipod-drvr-iap2.so 61aac55e1ec40b00

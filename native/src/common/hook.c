@@ -9,12 +9,17 @@
 #include "mcn_qnx.h"
 #include "mcn_hook.h"
 
+static int own_process(void);
+
 /* Also kept in RAM for the GEM "Save diagnostics" (MCN_LOG_FILE), up to MCN_LOG_MAX bytes. */
 static void log_line(const char *a, const char *b)
 {
     char line[256];
     int n, fd;
 
+    if (!own_process()) {
+        return; /* a child's stdout may be a pipe its parent parses */
+    }
     write(1, "[mst2-cluster-nav] ", 19);
     write(1, a, strlen(a));
     write(1, b, strlen(b));
@@ -51,7 +56,10 @@ static int first_called;
 
 void *mcn_hook_enter(struct mcn_hook *hook)
 {
-    if (mcn_first_call && !first_called && !__sync_lock_test_and_set(&first_called, 1)) {
+    /* The worker only for a running mod, in its own service: a spawn reaches SAL's hooks with
+     * no phone, and every child of SAL inherits its LD_PRELOAD. */
+    if (mcn_first_call && !first_called && mcn_active() &&
+        !__sync_lock_test_and_set(&first_called, 1)) {
         mcn_first_call();
     }
     if (!hook->real) {
@@ -62,7 +70,8 @@ void *mcn_hook_enter(struct mcn_hook *hook)
             abort();
         }
     }
-    if (hook->calls++ < 3) {
+    if (hook->calls < 3) {
+        hook->calls++;
         mcn_log2("call ", hook->name);
     }
     return hook->real;
@@ -287,12 +296,53 @@ static int trial_boot(void)
     return 1;
 }
 
+/*
+ * Whether this process is the service the library was made for (mcn_own_process, each part).
+ * cpu.conf's LD_PRELOAD is inherited by every child the service starts (popen shells, helpers);
+ * there the hooks pass every call through and write nothing at all. Decided once, on the first
+ * use; a log line from inside the decision is dropped.
+ */
+static int own_process(void)
+{
+    static volatile int own = -1;
+
+    if (own < 0) {
+        own = 0;
+        own = mcn_own_process() ? 1 : 0;
+    }
+    return own;
+}
+
+int mcn_main_exports(const char *symbol)
+{
+    /* A real handle: QNX's special dlsym handles are caller-sensitive. procfs is no way to
+     * tell: /proc/<pid>/exefile reads empty on this unit (mQbEMU). */
+    void *main_image = dlopen(NULL, RTLD_LAZY);
+
+    return main_image && dlsym(main_image, symbol);
+}
+
+/* What DT_INIT may not do (it runs in every child too): the load note and the crash guard. */
+static void start_once(void)
+{
+    static int started;
+
+    if (!__sync_lock_test_and_set(&started, 1)) {
+        mcn_log2(mcn_component, " hooks loaded");
+        mcn_guard_init();
+    }
+}
+
 int mcn_active(void)
 {
     static unsigned checked_ms;
     static int active, said = -1, registered = -1;
     unsigned now = mcn_now_ms();
 
+    if (!own_process()) {
+        return 0;
+    }
+    start_once();
     if (component_off) {
         return 0;
     }

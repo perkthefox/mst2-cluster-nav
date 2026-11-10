@@ -44,11 +44,17 @@ map() {
         s#/tsd/lib/mst2-cluster-nav#$W/lib#g; s#/tsd/hmi/HMI/jar#$W/jar#g
         s#/tsd/hmi/HMI/config/bundles.properties#$W/bundles.properties#g
         s#/tsd/bin/sal/tsd.mibstd2.sal.main#$W/sal.main#g
-        s#/usr/bin/##g; s#/bin/mount#mount_stub#g; s#/bin/date -t#echo \$TNOW#g
+        s#/usr/bin/sleep#sleep_stub#g; s#/usr/bin/##g; s#/bin/mount#mount_stub#g; s#/bin/date -t#echo \$TNOW#g
         s#/bin/rm #rm #g; s#/bin/cp #cp #g; s#/bin/mv #mv #g; s#/bin/sync#sync#g"
 }
 mount_stub() {
     [ "$MOUNT_OK" = y ]
+}
+# The guard's watcher sleeps. UP=y: this boot stays up (the watcher runs its course); UP=n: the
+# unit goes down at its first sleep. KILL_LATER=<dir>: a kill-switch card is mounted then.
+sleep_stub() {
+    [ -z "$KILL_LATER" ] || touch "$KILL_LATER/mst2-cluster-nav-disable"
+    [ "$UP" = y ] || exit 0
 }
 
 # guard <runHMI.sh> <setup> <expect loaded y|n> <expect reason> <name>
@@ -64,12 +70,15 @@ guard() {
     cp "$1" "$W/runHMI.sh"
     MOUNT_OK=n
     TNOW=100000
+    UP=y
+    KILL_LATER=
     cd "$W"
     eval "$2"
     cd "$HERE"
     sed -n '/^# >>> mst2-cluster-nav/,/^# <<< mst2-cluster-nav/p' "$W/runHMI.sh" | map > "$W/block.sh"
     # As in runHMI.sh: not under set -e, and no failure may end it.
-    (set +eu; BOOTCLASSPATH=stock; . "$W/block.sh" > /dev/null 2>&1; echo "$BOOTCLASSPATH" > "$W/bcp")
+    (set +eu; BOOTCLASSPATH=stock; . "$W/block.sh" > /dev/null 2>&1; echo "$BOOTCLASSPATH" > "$W/bcp"
+     wait)
     loaded=n
     [ "$(cat "$W/bcp")" != stock ] && loaded=y
     reason="$(cat "$W/var/off-reason" 2>/dev/null || true)"
@@ -82,7 +91,9 @@ guard "$T/mod.sh" 'touch var/enabled' y '' 'enabled, the block inside runHMI.sh'
 guard "$T/mod.sh" 'touch var/trial' y '' 'trial boot'
 guard "$T/mod.sh" 'touch var/trial shm/mst2-cluster-nav-armed' n '' 'trial armed on this boot'
 guard "$T/mod.sh" 'touch var/enabled media/mp000/mst2-cluster-nav-disable' n \
-    "kill switch on $T/w/media/mp000" 'kill switch'
+    "kill switch on $T/w/media/mp000: could not be removed from cpu.conf" 'kill switch, read-only'
+guard "$T/mod.sh" 'touch var/enabled media/mp000/mst2-cluster-nav-disable; MOUNT_OK=y' n \
+    "kill switch on $T/w/media/mp000: removed from cpu.conf" 'kill switch'
 guard "$T/mod.sh" 'touch var/enabled shm/mst2-cluster-nav-on; echo 99990 > var/hmi-busy' n \
     'the HMI restarted before the mod settled' 'HMI restart before settling'
 [ ! -e "$W/var/hmi-strikes" ] && [ ! -e "$W/var/hmi-busy" ] || bad "guard FAILED: restart counted twice"
@@ -122,7 +133,7 @@ guard "$T/mod.sh" 'touch var/enabled; echo 1 > var/hmi-strikes' y '' 'settled la
 # A preload library that cannot be loaded: every entry of ours leaves cpu.conf. Without a
 # writable partition the mod is still off; with one, cpu.conf keeps its mode and stock bytes.
 guard "$T/mod.sh" 'touch var/enabled; : > lib/libmcn_sal.so' n \
-    "$T/w/lib/libmcn_sal.so missing, empty or not an ARM library: removed from cpu.conf" \
+    "$T/w/lib/libmcn_sal.so missing, empty or not an ARM library: could not be removed from cpu.conf" \
     'empty preload library'
 grep -q libmcn_sal "$W/cpu.conf" || bad "guard FAILED: cpu.conf changed without remount"
 guard "$T/mod.sh" 'touch var/enabled; echo text > lib/libmcn_dm.so; chmod 640 cpu.conf; MOUNT_OK=y' \
@@ -132,6 +143,49 @@ printf '%s\n' 'service iMX6.SAL' '   envar LD_PRELOAD /lib/a.so' 'service iMX6.D
     cmp -s - "$W/cpu.conf" || bad "guard FAILED: cpu.conf repair"
 [ "$(ls -l "$W/cpu.conf" | cut -c1-10)" = -rw-r----- ] || bad "guard FAILED: cpu.conf mode lost"
 [ ! -e "$W/cpu.conf.mcn" ] || bad "guard FAILED: temporary file left"
+
+# Boot-loop breaker, whatever the mod's state while cpu.conf preloads us: a boot that stays up
+# clears its mark, one that goes down leaves it; the fourth boot in a row after one that did not
+# stay up takes the libraries out. An old mark (a normal short drive), an HMI restart within one
+# boot, or a cpu.conf without us does not count. A kill-switch card mounted after the start is
+# seen by the watcher.
+STRIPPED="$(printf '%s\n' 'service iMX6.SAL' '   envar LD_PRELOAD /lib/a.so' 'service iMX6.DispMg')"
+guard "$T/mod.sh" '' n '' 'boot that stays up, mod off'
+[ ! -e "$W/var/boot-up" ] && grep -q libmcn_dm "$W/cpu.conf" || bad "guard FAILED: boot-up kept"
+guard "$T/mod.sh" 'UP=n' n '' 'boot that goes down'
+[ "$(cat "$W/var/boot-up" 2>/dev/null)" = 100000 ] || bad "guard FAILED: no boot-up mark"
+guard "$T/mod.sh" 'UP=n; echo 99970 > var/boot-up' n '' 'second short boot'
+[ "$(cat "$W/var/boot-loops" 2>/dev/null)" = 1 ] &&
+    grep -q '^100000 hmi: boot 1 in a row after one that did not stay up 120 s$' "$W/var/history" ||
+    bad "guard FAILED: short boot not counted"
+guard "$T/mod.sh" 'UP=n; touch var/enabled; echo 99970 > var/boot-up; echo 1 > var/boot-loops' y \
+    '' 'third short boot, mod on'
+[ "$(cat "$W/var/boot-loops")" = 2 ] || bad "guard FAILED: third short boot"
+guard "$T/mod.sh" 'UP=n; touch var/enabled; echo 99970 > var/boot-up; echo 2 > var/boot-loops' n \
+    'the unit restarted 4 times in a row within 120 s: could not be removed from cpu.conf' \
+    'fourth short boot, read-only'
+guard "$T/mod.sh" 'UP=n; echo 99970 > var/boot-up; echo 2 > var/boot-loops; MOUNT_OK=y' n \
+    'the unit restarted 4 times in a row within 120 s: removed from cpu.conf' 'fourth short boot'
+[ "$(cat "$W/cpu.conf")" = "$STRIPPED" ] && [ ! -e "$W/var/boot-up" ] &&
+    [ ! -e "$W/var/boot-loops" ] && [ -e "$W/shm/mst2-cluster-nav-off" ] ||
+    bad "guard FAILED: loop not broken"
+grep -q '^100000 hmi: the unit restarted 4 times in a row within 120 s: removed from cpu.conf, off$' \
+    "$W/var/history" || bad "guard FAILED: loop break not in the history"
+guard "$T/mod.sh" 'UP=n; echo x > var/boot-up; echo 2 > var/boot-loops; MOUNT_OK=y' n \
+    'the unit restarted 4 times in a row within 120 s: removed from cpu.conf' 'unknown clock'
+guard "$T/mod.sh" 'UP=n; echo 1000 > var/boot-up; echo 2 > var/boot-loops; MOUNT_OK=y' n '' \
+    'last start long ago'
+[ ! -e "$W/var/boot-loops" ] && grep -q libmcn_dm "$W/cpu.conf" || bad "guard FAILED: old mark counted"
+guard "$T/mod.sh" \
+    'UP=n; touch shm/mst2-cluster-nav-booted; echo 99970 > var/boot-up; echo 2 > var/boot-loops' \
+    n '' 'HMI restart within one boot'
+[ "$(cat "$W/var/boot-loops")" = 2 ] && [ "$(cat "$W/var/boot-up")" = 99970 ] ||
+    bad "guard FAILED: HMI restart counted as a boot"
+guard "$T/mod.sh" "UP=n; printf '%s\\n' 'service iMX6.SAL' > cpu.conf" n '' 'not preloaded'
+[ ! -e "$W/var/boot-up" ] || bad "guard FAILED: counted without preload"
+guard "$T/mod.sh" 'KILL_LATER=$W/media/mp000; MOUNT_OK=y' n \
+    "kill switch on $T/w/media/mp000: removed from cpu.conf" 'kill-switch card mounted later'
+[ "$(cat "$W/cpu.conf")" = "$STRIPPED" ] || bad "guard FAILED: late kill switch left cpu.conf"
 
 # The installer's conflict check (mcn_navignore_lines): only active lines outside our block, and
 # only with the jar present.
@@ -176,6 +230,14 @@ unit() {
     for lib in sal dm ipod; do
         elf "$C/libmcn_$lib.so" "$lib payload"
     done
+    # The unit's firmware files the hooks are made for, and the card's list of them.
+    mkdir -p "$W/fw"
+    echo displaymanager > "$W/fw/displaymanager"
+    echo openmaxal > "$W/fw/libOpenMAXAL.so.1"
+    (. "$W/scripts/mcn_common.sh"
+     { echo "# firmware test"
+       for f in "$W/fw/displaymanager" "$W/fw/libOpenMAXAL.so.1"; do echo "$f $(mcn_sum "$f")"; done
+     } > "$C/firmware.list")
     manifest
 }
 manifest() {
@@ -216,6 +278,9 @@ cmp -s "$W/var/backup/cpu.conf" "$T/stock.conf" &&
 [ "$(gem mcn_set_zoom1250.sh)" = ok ] && [ "$(cat "$W/var/zoom")" = 1250 ] ||
     bad "settings FAILED: zoom"
 [ "$(gem mcn_set_status.sh)" = ok ] && grep -q 'zoom: 1250' "$W/out" || bad "settings FAILED: status"
+[ "$(gem mcn_set_diag.sh)" = ok ] &&
+    grep -q '^all as the mod was made and tested for$' "$W/media/mp001/mst2-cluster-nav-diag.txt" ||
+    bad "settings FAILED: diag: $(cat "$W/out")"
 [ "$(gem mcn_uninstall.sh)" = ok ] && stock && [ ! -e "$W/var" ] && [ ! -e "$W/lib" ] ||
     bad "uninstall FAILED: $(cat "$W/out")"
 [ "$(ls -l "$W/cpu.conf" | cut -c1-10)" = -rw-r----- ] || bad "uninstall FAILED: cpu.conf mode lost"
@@ -247,6 +312,25 @@ source_tree
 rm -r "$W/media/mp001/custom"
 [ "$(gem mcn_install.sh)" = failed ] && stock && grep -q "^preload.list$" "$W/out" &&
     grep -q "(not 'Source code')" "$W/out" || bad "install FAILED: source tree not explained"
+
+# Another firmware build, or a cpu.conf another tool edited: nothing changed.
+for other in 'echo other > "$W/fw/displaymanager"' 'rm "$W/fw/libOpenMAXAL.so.1"' \
+    'rm "$C/firmware.list"; manifest' \
+    'sed "s#^\(   envar LD_PRELOAD /lib/libmmappriofix.so.1\)\$#\1 #" "$T/stock.conf" > "$W/cpu.conf"' \
+    'sed "s#\$#$(printf "\r")#" "$T/stock.conf" > "$W/cpu.conf"'; do
+    unit
+    eval "$other"
+    cp "$W/cpu.conf" "$T/before.conf"
+    [ "$(gem mcn_install.sh)" = failed ] && cmp -s "$W/cpu.conf" "$T/before.conf" &&
+        cmp -s "$W/runHMI.sh" "$T/stock.sh" && [ ! -e "$W/lib" ] ||
+        bad "install FAILED: went on ($other): $(cat "$W/out")"
+done
+unit
+echo other > "$W/fw/displaymanager"
+gem mcn_install.sh > /dev/null
+grep -q "^$W/fw/displaymanager is another build.\$" "$W/out" &&
+    grep -q "^Aborted: this unit's firmware is not the build" "$W/out" ||
+    bad "install FAILED: firmware mismatch not explained"
 
 # No backup on the card (full, write-protected): nothing changed.
 unit

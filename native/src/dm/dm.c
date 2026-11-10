@@ -295,8 +295,10 @@ MCN_EXPORT void *mmfbq_get_and_wait(void *q, const struct timespec *deadline)
     unsigned head;
 
     resolve();
-    if (!sink_return || (uintptr_t)__builtin_return_address(0) != sink_return) {
-        /* Not the buffer-queue interface DisplayManager reads (other element layouts). */
+    if (!sink_return || (uintptr_t)__builtin_return_address(0) != sink_return ||
+        (!phone && !mcn_active())) {
+        /* Not the buffer-queue interface DisplayManager reads (other element layouts), or the
+         * mod is off: stock, no element is looked at. */
         return real_get_and_wait(q, deadline);
     }
     if (q && q == cluster_queue && stream_alive()) {
@@ -334,7 +336,7 @@ MCN_EXPORT void *mmfbq_get_and_wait(void *q, const struct timespec *deadline)
     for (;;) {
         const struct element *el = e = real_get_and_wait(q, deadline);
 
-        if (!el) {
+        if (!el || !el->data) {
             return e;
         }
         if (has_nal(el->data, el->size, 7)) {
@@ -433,8 +435,14 @@ MCN_EXPORT int mmfbq_done(void *q, void *e)
 
 const char mcn_component[] = "dm";
 
+int mcn_own_process(void)
+{
+    /* Exported by tsd.mibstd2.system.displaymanager and by no other file of the firmware. */
+    return mcn_main_exports(
+        "_ZN3tsd6system14displaymanager9qnxscreen14OpenMAXEncoder13eventCallbackEPKPK12XARecordItf_Pvm");
+}
+
+/* DT_INIT, in DisplayManager and in every child that inherits the preload: nothing to do. */
 MCN_EXPORT void mcn_init(void)
 {
-    mcn_log("DisplayManager hooks loaded");
-    mcn_guard_init();
 }

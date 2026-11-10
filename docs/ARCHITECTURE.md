@@ -26,7 +26,47 @@ Continental AID 10" `5E0920790A`.
 The mod must never cost the unit its HMI: whatever goes wrong, it takes itself out and the unit
 runs stock.
 
-- **Kill switch.** Each part runs only when no mounted card (`/media/mp000`…`mp009`) carries
+"Off" alone is not enough. Once installed, `cpu.conf` preloads our libraries into DisplayManager
+and SAL on every boot, whatever the mod's state, and both services are `restart global` in
+`cpu.conf`: a crash in either resets the whole unit. In 1.1.0 a unit went into a reset loop right
+after Install, never reaching the menu, with the mod already off after its trial boot; the SD kill
+switch did not help, and only a reflash brought it back (cause not found: no logs survived). So
+every way out below ends in the same place, our libraries removed from `cpu.conf`, and the parts
+that still run while the libraries are loaded do nothing at all unless the mod is on.
+
+- **Boot-loop breaker** (in `runHMI.sh`, the first thing it does: the HMI service starts 0.15 s
+  after DisplayManager, mQbEMU `iMX6.DispMg.start` 0.048 s, `iMX6.J9/HMI.start` 0.193 s). While
+  `cpu.conf` preloads us, each boot leaves `boot-up` on `/tsd/var`, and a background job removes it
+  once the boot has stayed up 2 minutes, counted with `sleep`. A boot that finds it counts one in
+  `boot-loops`; the fourth such boot in a row takes our libraries out of `cpu.conf`. The clock
+  cannot tell a reset loop from a short drive: on mQbEMU `date -t` reads 1356998400 (2013-01-01)
+  on every boot this early. It is only used the other way: a last start more than 10 minutes
+  ago by a set clock starts the count again. An HMI restart within one boot (RAM mark) is no
+  boot.
+- **Kill switch that unloads.** A mounted card with `mst2-cluster-nav-disable` takes our
+  libraries out of `cpu.conf`; Install puts them back. A card in the slot at power-on is mounted
+  before `runHMI.sh` starts (mQbEMU: `CardMounter1: ActiveMounted` before the guard's
+  `kill switch on /media/mp000`); one put in later is caught by the background job, which looks
+  for the file every 2 s for those 2 minutes. The native hooks still check it every 2 s on their
+  own.
+- **Own process only.** A child process inherits its parent's `LD_PRELOAD` (SAL starts shells
+  with `popen` and reads their output). Each library therefore does nothing in `DT_INIT` but
+  initialise its locks, and decides on its first hook call whether it runs in its own service
+  (whether the main image exports a symbol no other firmware file has: SAL's
+  `tsd::sal::gal::aoa::AoaDeviceManager::deviceDisconnected`, DisplayManager's
+  `OpenMAXEncoder::eventCallback`, `mm-ipod`'s `ipod_log`; QNX 6.5 has no `/proc/<pid>/exefile`);
+  anywhere else every hook is a silent pass-through. SAL's worker thread starts only once the mod
+  is on, and DisplayManager hands the encoder's frames straight through without looking at them
+  while it is off.
+- **Firmware check at Install.** The hooks depend on exact builds: hooked functions, fixed
+  offsets and call sites. `firmware.list` names the 11 files they touch (DisplayManager, SAL,
+  `libOpenMAXAL`, `libtsd.common`, the CarPlay and Android Auto plug-ins, `libmxcvpu`,
+  `libiap2client`, `mm-ipod` and its iAP2 driver) with the check value of `MST2_EU_SK_ZR_P0480T`,
+  and Install stops, changing nothing, if any differs. It also refuses a `cpu.conf` whose
+  `LD_PRELOAD` lines are not as the firmware writes them (a carriage return or a trailing blank
+  would join our entry to the stock library before it).
+
+- **Switched off.** Each part runs only when no mounted card (`/media/mp000`…`mp009`) carries
   `mst2-cluster-nav-disable`, and the mod is enabled, on its trial boot, or loaded on this boot
   (`/dev/shmem/mst2-cluster-nav-on`). The native hooks and the HMI bundle check again every 2 s;
   switched off, the hooks pass every call straight to the firmware and the bundle writes nothing

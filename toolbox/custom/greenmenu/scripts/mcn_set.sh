@@ -67,16 +67,21 @@ case "$1" in
         "cat /dev/shmem/mst2-cluster-nav.log" "cat /tsd/var/sal/carplay/iap2.cfg" \
         "cat /dev/shmem/mst2-cluster-nav-iap2.cfg" \
         "ls -l /dev/shmem/mst2-cluster-nav-rg-ready" \
-        "ls -l $MCN $LIBDIR"; do
+        "ls -l $MCN $LIBDIR" "date -t" "grep LD_PRELOAD $CPU_CONF" \
+        "ls -l $HMI_SH* /tsd/hmi/HMI/jar" "grep -n BOOTCLASSPATH $HMI_SH" "pidin"; do
         echo "### $c"
         $c 2>&1
       done
       for f in mode fps keyframe scene display kbps zoom enabled \
-        trial off-reason history history.old hmi-busy hmi-strikes off-sal off-dm off-ipod \
+        trial off-reason history history.old hmi-busy hmi-strikes boot-up boot-loops \
+        off-sal off-dm off-ipod \
         strikes-sal strikes-dm strikes-ipod busy-sal busy-dm busy-ipod; do
         [ -e $MCN/$f ] && echo "### $f: $(cat $MCN/$f)"
       done
       echo "### runHMI.sh block: $(mcn_installed && echo yes || echo no)"
+      echo "### firmware files against $card/custom/mst2-cluster-nav/firmware.list"
+      mcn_check_firmware $card/custom/mst2-cluster-nav/firmware.list 2>&1 &&
+        echo "all as the mod was made and tested for"
     } > $out
     # The iAP2 driver's own log (mm-ipod -vvvvvv): every message, unknown ones in hex.
     cp /dev/shmem/iap2_carplay.log $card/mst2-cluster-nav-iap2.log 2>/dev/null

@@ -25,6 +25,12 @@ if ! mcn_verify_card $SRC; then
   echo "Aborted: the package on the card is incomplete or damaged; nothing was changed."
   exit 1
 fi
+echo "Checking this unit's firmware files..."
+if ! mcn_check_firmware $SRC/firmware.list; then
+  echo "Aborted: this unit's firmware is not the build the mod was made and tested for"
+  echo "(MST2_EU_SK_ZR_P0480T); its hooks could reset the unit on every boot. Nothing was changed."
+  exit 1
+fi
 
 # Stock copies, on the unit and, so that they survive a unit whose HMI no longer starts, on the
 # card. While the mod is not registered they are taken again from the current files (a firmware

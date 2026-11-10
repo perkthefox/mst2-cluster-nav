@@ -194,10 +194,15 @@ static void patch(void)
     }
 }
 
+int mcn_own_process(void)
+{
+    return is_ipod();
+}
+
 MCN_EXPORT void mcn_init(void)
 {
-    /* /bin/on inherits the preload too; only mm-ipod may load the driver. */
-    if (!mcn_active() || !is_ipod()) {
+    /* /bin/on inherits the preload too; only mm-ipod may load the driver (mcn_own_process). */
+    if (!mcn_active()) {
         return;
     }
     /*
@@ -211,10 +216,6 @@ MCN_EXPORT void mcn_init(void)
      * and the Location builder 0xea08 calls no exit. The receive wrapper is not bracketed: it
      * runs per USB transfer and exit(0) above is reached through it.
      */
-    mcn_guard_init();
-    if (!mcn_active()) {
-        return;
-    }
     mcn_busy(1);
     patch();
     mcn_busy(0);

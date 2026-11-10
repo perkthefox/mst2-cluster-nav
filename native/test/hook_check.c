@@ -10,6 +10,12 @@ int fork(void);
 int waitpid(int pid, int *status, int options);
 void exit(int status);
 const char mcn_component[] = "check";
+static int own = 1, stdout_writes;
+
+int mcn_own_process(void)
+{
+    return own;
+}
 
 #define CHECK(x)                            \
     do {                                    \
@@ -121,6 +127,7 @@ ssize_t mcn_test_write(int fd, const void *buf, size_t n)
     int i = fd - 20;
 
     if (fd == 1) {
+        stdout_writes++;
         return (ssize_t)n; /* the service's stdout */
     }
     CHECK(i >= 0 && i < NFILES && fs[i].used && fs[i].len + (int)n < (int)sizeof(fs[i].data));
@@ -178,9 +185,29 @@ static void without_block(const char *hmi)
     CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0);
 }
 
+/* A child that inherited the preload: no output (its stdout may be a pipe its parent parses),
+ * no guard state, every hook a pass-through, whatever the mod's state. */
+static void foreign_child(void)
+{
+    int status = 1, pid = fork();
+
+    if (pid == 0) {
+        own = 0;
+        memset(fs, 0, sizeof(fs));
+        put(MCN_HMI_SH, hmi_with_block);
+        put(MCN_DIR "/enabled", "");
+        put(MCN_BOOT_MARK, "");
+        mcn_log("must not appear");
+        exit(mcn_active() || stdout_writes || find(MCN_DIR "/busy-check") >= 0 ? 1 : 0);
+    }
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0);
+}
+
 int main(void)
 {
     char busy[96], strikes[96], off[96];
+
+    foreign_child();
 
     /* runHMI.sh without our block (a tool restored an old copy, or a firmware update). */
     without_block(NULL);
@@ -240,7 +267,8 @@ int main(void)
     mcn_guard_init(); /* the third in a row: this service's hooks off until Install */
     CHECK(value(strikes) == 3 && value(off) == 1 && !mcn_active());
     CHECK(find(MCN_DIR "/history") >= 0); /* and the reason survives the reset */
-    puts("hook: runHMI.sh block, kill switch, guard, enabled, trial taken once and never on its "
-         "arming boot, nesting busy mark, crash strikes: ok");
+    puts("hook: silent pass-through in other processes, runHMI.sh block, kill switch, guard, "
+         "enabled, trial taken once and never on its arming boot, nesting busy mark, crash "
+         "strikes: ok");
     return 0;
 }

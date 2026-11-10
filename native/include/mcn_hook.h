@@ -67,7 +67,14 @@ extern const char mcn_component[];
  */
 int mcn_active(void);
 /*
- * Crash guard of each service. mcn_guard_init (from mcn_init) turns the hooks of this service
+ * Each part: whether this process is its service. Every hook stays a plain pass-through, and
+ * nothing is logged, in any other process (children inherit LD_PRELOAD). mcn_main_exports:
+ * whether the main image exports a symbol (dlopen(NULL) + dlsym; works in DT_INIT too).
+ */
+int mcn_own_process(void);
+int mcn_main_exports(const char *symbol);
+/*
+ * Crash guard of each service. mcn_guard_init (from the first mcn_active) turns the hooks of this service
  * off for good after STRIKES_OFF runs in a row ended while busy, that is while a stream or the
  * cluster replacement ran, followed by a quick restart; mcn_busy(1/0) brackets such work (pairs
  * may nest and come from several threads: the mark stays while any is open) and mcn_busy_tick

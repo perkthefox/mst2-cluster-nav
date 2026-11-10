@@ -48,8 +48,16 @@ void mcn_busy(int on)
     CHECK(busy >= 0 && busy <= 1);
 }
 
+/* As common/hook.c: nothing in another process, then the crash guard once, then the switch. */
+int mcn_own_process(void);
 int mcn_active(void)
 {
+    if (!mcn_own_process()) {
+        return 0;
+    }
+    if (!guarded) {
+        mcn_guard_init();
+    }
     return enabled;
 }
 
