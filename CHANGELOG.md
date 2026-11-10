@@ -20,6 +20,11 @@ boots normally on mQbEMU and in another car). This release makes sure no such lo
 - **Firmware check:** Install compares the 11 firmware files the hooks touch with
   MST2_EU_SK_ZR_P0480T and refuses any other build, and a `cpu.conf` another tool has edited,
   before anything is changed.
+- **Dual navigation's Disable keeps the mod's guard:** the toolbox patch copies `runHMI.sh` to
+  `runHMI.sh.bak` the first time it is enabled and copies it back on Disable. A copy older than
+  Install brought back a `runHMI.sh` without the mod's block: the boot-loop breaker, the kill
+  switch and the guard were gone while `cpu.conf` still loaded the libraries. Install now puts the
+  block into that copy too, and Uninstall takes it out again.
 - **Libraries do nothing where they do not belong:** in child processes, which inherit the
   start-up list's preload, every hook is a silent pass-through; nothing runs at load time; SAL's
   worker starts only with the mod on; DisplayManager does not look at the cluster frames while
@@ -126,6 +131,11 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
 - **Проверка прошивки:** Install сверяет 11 файлов прошивки, которые трогают хуки, с
   MST2_EU_SK_ZR_P0480T и отказывается от любой другой сборки и от `cpu.conf`, изменённого другим
   инструментом, ничего не тронув.
+- **Выключение двойной навигации больше не снимает сторожа мода:** патч тулбокса при первом
+  включении копирует `runHMI.sh` в `runHMI.sh.bak`, а при выключении копирует обратно. Копия,
+  сделанная до Install, возвращала `runHMI.sh` без блока мода: защиты от цикла перезагрузок,
+  выключателя на SD и сторожа не было, а `cpu.conf` по-прежнему загружал библиотеки. Теперь Install
+  добавляет блок и в эту копию, а Uninstall убирает его оттуда.
 - **Библиотеки ничего не делают там, где им не место:** в дочерних процессах (они наследуют
   preload из списка запуска) каждый хук молча пропускает вызов; при загрузке ничего не
   запускается; рабочий поток SAL стартует только при включённом моде; DisplayManager не смотрит

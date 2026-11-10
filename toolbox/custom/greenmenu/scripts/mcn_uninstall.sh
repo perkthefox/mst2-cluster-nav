@@ -9,7 +9,7 @@ mcn_remove_all
 # The libraries go only after cpu.conf no longer names them.
 grep -q 'mst2-cluster-nav/' $CPU_CONF || rm -rf $LIBDIR
 mcn_mount_ro
-if grep -q 'mst2-cluster-nav' $HMI_SH $BUNDLES $CPU_CONF; then
+if mcn_traces; then
   # Keep the backups in $MCN/backup (and on the card) until the files are clean.
   echo "Not every trace could be removed; the stock copies stay in $MCN/backup."
   exit 1

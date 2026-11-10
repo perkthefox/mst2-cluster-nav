@@ -89,6 +89,26 @@ mcn_navignore_lines() {
   mcn_strip_block $HMI_SH | grep -v '^[ 	]*#' | grep 'NavActiveIgnore.jar'
 }
 
+# Its Enable copies runHMI.sh to $HMI_BAK once, when there is none, and never removes it; its
+# Disable copies $HMI_BAK back over runHMI.sh. A copy made before Install would drop our block, and
+# with it the guard and the boot-loop breaker, while cpu.conf still preloads the libraries. So an
+# existing copy gets the block too (Uninstall takes it out again). $1 is the card's runHMI.block.
+HMI_BAK=$HMI_SH.bak
+mcn_bak_with_block() {
+  [ -e $HMI_BAK ] || return 0
+  mcn_rewrite $HMI_BAK mcn_strip_block mcn_hmi_with_block "$1" $HMI_BAK &&
+    grep -q '^# >>> mst2-cluster-nav' $HMI_BAK && return 0
+  echo "$HMI_BAK (the dual navigation patch's copy of runHMI.sh, put back when it is"
+  echo "disabled) could not take the mod's block."
+  return 1
+}
+
+# Any part of the mod left in the stock files.
+mcn_traces() {
+  grep -q 'mst2-cluster-nav' $HMI_SH $BUNDLES $CPU_CONF && return 0
+  [ -e $HMI_BAK ] && grep -q 'mst2-cluster-nav' $HMI_BAK
+}
+
 mcn_installed() {
   grep -q '>>> mst2-cluster-nav' $HMI_SH
 }
@@ -245,8 +265,9 @@ mcn_bundles_remove() {
 
 # The three files with the mod in, built from their content without it, so installing again
 # (an update) replaces our parts instead of adding them twice. All write to stdout.
+# mcn_hmi_with_block <block> [runHMI.sh or its copy]
 mcn_hmi_with_block() {
-  mcn_strip_block $HMI_SH | sed '/^BOOTCLASSPATH="\$IFSDIR\/tsd.mibstd2.hmi.v2.jxe:/r '"$1"
+  mcn_strip_block ${2:-$HMI_SH} | sed '/^BOOTCLASSPATH="\$IFSDIR\/tsd.mibstd2.hmi.v2.jxe:/r '"$1"
 }
 
 mcn_bundles_with_block() {
@@ -278,11 +299,14 @@ mcn_rewrite() {
   return $rc
 }
 
-# The three stock files without any part of the mod; Uninstall, and Install when it fails.
-# Each is tried even if another fails.
+# The three stock files (and the dual navigation copy of runHMI.sh) without any part of the mod;
+# Uninstall, and Install when it fails. Each is tried even if another fails.
 mcn_remove_all() {
   all=0
   mcn_rewrite $HMI_SH mcn_strip_block mcn_strip_block $HMI_SH || all=1
+  if [ -e $HMI_BAK ]; then
+    mcn_rewrite $HMI_BAK mcn_strip_block mcn_strip_block $HMI_BAK || all=1
+  fi
   mcn_rewrite $BUNDLES mcn_bundles_remove mcn_bundles_remove || all=1
   mcn_rewrite $CPU_CONF mcn_unpreload_conf mcn_unpreload_conf || all=1
   return $all

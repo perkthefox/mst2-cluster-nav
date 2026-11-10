@@ -65,6 +65,13 @@ that still run while the libraries are loaded do nothing at all unless the mod i
   and Install stops, changing nothing, if any differs. It also refuses a `cpu.conf` whose
   `LD_PRELOAD` lines are not as the firmware writes them (a carriage return or a trailing blank
   would join our entry to the stock library before it).
+- **Dual navigation's copy of `runHMI.sh`.** The toolbox's dual navigation patch copies
+  `runHMI.sh` to `runHMI.sh.bak` on its first Enable (only when there is none, and never removes
+  it) and copies it back on Disable. A copy made before Install would bring back a `runHMI.sh`
+  without our block: the breaker, the unloading kill switch and the guard would be gone while
+  `cpu.conf` still preloads us (the native hooks see no block and only pass calls through). Install therefore puts the block into an existing copy as well
+  (`mcn_bak_with_block`, the same checked rewrite) and refuses to go on if it cannot; Uninstall
+  strips it again.
 
 - **Switched off.** Each part runs only when no mounted card (`/media/mp000`…`mp009`) carries
   `mst2-cluster-nav-disable`, and the mod is enabled, on its trial boot, or loaded on this boot
@@ -485,7 +492,7 @@ block and nested crash-guard logic of `common/hook.c`; the avcC/Annex-B framing 
 records. `sh toolbox/check.sh` runs the `runHMI.sh` guard from inside a `runHMI.sh` (kill switch,
 trial, HMI restart, `hmi-busy` strikes, dual navigation added later, a missing or non-ARM
 library, the `cpu.conf` repair with the mode kept) and runs Install, update, Uninstall and every
-menu script in a sandbox: damaged packages, a card that cannot take the backup, stale backups, a
+menu script in a sandbox, with dual navigation enabled and disabled before and after Install: damaged packages, a card that cannot take the backup, stale backups, a
 rewrite that loses a line, the late-start list in any order, and Uninstall giving the stock files
 back byte for byte. `sh hmi/check.sh` checks all 54 maneuvers for both traffic sides, lanes from
 a native snapshot, the write rules and now playing.

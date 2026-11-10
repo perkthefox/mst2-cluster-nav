@@ -80,6 +80,7 @@ fi
 mcn_mount_rw
 # The jar goes to the END of the boot class path, after the stock line that defines it.
 mcn_rewrite $HMI_SH mcn_strip_block mcn_hmi_with_block $SRC/runHMI.block &&
+  mcn_bak_with_block $SRC/runHMI.block &&
   mcn_rewrite $BUNDLES mcn_bundles_remove mcn_bundles_with_block $SRC/bundles.block &&
   mcn_rewrite $CPU_CONF mcn_unpreload_conf mcn_conf_with_preload $SRC/preload.list
 mcn_mount_ro
@@ -89,7 +90,7 @@ if ! mcn_installed || ! grep -q "^Bundle\.Startup\.Lateload = .*,$BUNDLE_ID\$" $
   mcn_mount_rw
   mcn_remove_all
   mcn_mount_ro
-  if grep -q 'mst2-cluster-nav' $HMI_SH $BUNDLES $CPU_CONF; then
+  if mcn_traces; then
     echo "Not every trace could be removed: the stock copies are in $MCN/backup and on the card."
   fi
   exit 1

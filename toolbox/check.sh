@@ -348,6 +348,56 @@ cp "$T/conf" "$W/cpu.conf"
 [ "$(gem mcn_install.sh)" = ok ] && cmp -s "$W/var/backup/runHMI.sh" "$T/stock.sh" &&
     cmp -s "$W/var/backup/cpu.conf" "$T/stock.conf" || bad "install FAILED: stale backups kept"
 
+# The toolbox's dual navigation patch, as its activate/deactivate_navignore.sh do it: Enable
+# copies runHMI.sh to runHMI.sh.bak once, when there is none, and adds its line after every
+# BOOTCLASSPATH= line; Disable copies runHMI.sh.bak back. A copy older than Install gets our block,
+# so Disable keeps the guard; Uninstall leaves both stock.
+dualnav_on() {
+    grep -qF '$BOOTCLASSPATH -Xbootclasspath/p:$MIBJAR/NavActiveIgnore.jar' "$W/runHMI.sh" && return
+    [ -f "$W/runHMI.sh.bak" ] || cp "$W/runHMI.sh" "$W/runHMI.sh.bak"
+    awk '{ print } /^BOOTCLASSPATH=/ {
+        print "BOOTCLASSPATH=\"$BOOTCLASSPATH -Xbootclasspath/p:$MIBJAR/NavActiveIgnore.jar\"" }' \
+        "$W/runHMI.sh" > "$T/dualnav" && cat "$T/dualnav" > "$W/runHMI.sh"
+    : > "$W/jar/NavActiveIgnore.jar"
+}
+dualnav_off() {
+    rm -f "$W/jar/NavActiveIgnore.jar"
+    [ ! -f "$W/runHMI.sh.bak" ] || cp -f "$W/runHMI.sh.bak" "$W/runHMI.sh"
+}
+has_block() {
+    grep -q '^# >>> mst2-cluster-nav' "$1" && sed "$STRIP" "$1" | cmp -s - "$T/stock.sh"
+}
+unit
+dualnav_on
+cp "$W/runHMI.sh" "$T/dualnav-on"
+[ "$(gem mcn_install.sh)" = failed ] && cmp -s "$W/runHMI.sh" "$T/dualnav-on" && [ ! -e "$W/lib" ] ||
+    bad "install FAILED: went on with dual navigation"
+dualnav_off
+[ "$(gem mcn_install.sh)" = ok ] && has_block "$W/runHMI.sh.bak" ||
+    bad "install FAILED: dual navigation copy without the block: $(cat "$W/out")"
+dualnav_on
+dualnav_off
+has_block "$W/runHMI.sh" || bad "dual navigation FAILED: Disable dropped the block"
+[ "$(gem mcn_uninstall.sh)" = ok ] && stock && cmp -s "$W/runHMI.sh.bak" "$T/stock.sh" ||
+    bad "uninstall FAILED: dual navigation copy: $(cat "$W/out")"
+unit
+[ "$(gem mcn_install.sh)" = ok ] && [ ! -e "$W/runHMI.sh.bak" ] || bad "install FAILED: made a copy"
+dualnav_on
+dualnav_off
+has_block "$W/runHMI.sh" && has_block "$W/runHMI.sh.bak" ||
+    bad "dual navigation FAILED: enabled after Install, block lost"
+cp "$T/stock.sh" "$W/runHMI.sh.bak"
+[ "$(gem mcn_install.sh)" = ok ] && has_block "$W/runHMI.sh.bak" ||
+    bad "update FAILED: dual navigation copy without the block"
+[ "$(gem mcn_uninstall.sh)" = ok ] && stock && cmp -s "$W/runHMI.sh.bak" "$T/stock.sh" ||
+    bad "uninstall FAILED: dual navigation copy: $(cat "$W/out")"
+unit
+printf '%s\n' '#!/bin/ksh' 'echo other' > "$W/runHMI.sh.bak"
+cp "$W/runHMI.sh.bak" "$T/bak"
+[ "$(gem mcn_install.sh)" = failed ] && stock && cmp -s "$W/runHMI.sh.bak" "$T/bak" &&
+    grep -q "could not take the mod's block" "$W/out" ||
+    bad "install FAILED: went on with a dual navigation copy it cannot fix: $(cat "$W/out")"
+
 # An update whose second library cannot be copied keeps the old set complete.
 unit
 [ "$(gem mcn_install.sh)" = ok ] || bad "install FAILED: $(cat "$W/out")"

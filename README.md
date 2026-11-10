@@ -238,15 +238,18 @@ Changes apply from the next CarPlay connection or reboot, as the menu says.
 - **Before uninstalling the Toolbox**, uninstall the mod: removing the Toolbox removes the menu
   scripts, and with them the mod's Uninstall button.
 - **Dual navigation** (`NavActiveIgnore.jar`) does not mix with this mod: Install refuses it, and
-  if it is switched on later, the mod switches itself off.
+  if it is switched on later, the mod switches itself off. Its backup `runHMI.sh.bak`, which it
+  copies back when it is disabled, gets the mod's block at Install too, so disabling it keeps the
+  mod's guard.
 
 </details>
 
 <details>
 <summary><b>❓ FAQ</b></summary>
 
-**Does it change my firmware?** No file of the firmware is replaced. Three text files get a
-marked addition, removed again on Uninstall, byte for byte.
+**Does it change my firmware?** No file of the firmware is replaced. Three text files (and dual
+navigation's `runHMI.sh.bak`, if there is one) get a marked addition, removed again on Uninstall,
+byte for byte.
 
 **What if something goes wrong on the road?** The cluster falls back to the stock map or arrows on
 its own. For a full stop, insert the card with `mst2-cluster-nav-disable`.
