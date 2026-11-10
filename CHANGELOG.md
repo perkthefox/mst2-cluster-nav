@@ -4,7 +4,46 @@
 
 ## Unreleased
 
+**1.1.0 was withdrawn:** right after Install one head unit went into a reset loop that never
+reached the menu, with the mod already off after its trial boot; the SD kill switch did not stop
+it and the unit had to be reflashed. The cause was not found (no logs survived; the same package
+boots normally on mQbEMU and in another car). This release makes sure no such loop can last.
+
+### Safety
+- **Boot-loop breaker:** while the mod's libraries are in the start-up list, every boot is
+  counted; four boots in a row that do not stay up two minutes take the libraries out of
+  `cpu.conf` by themselves, whether the mod is on or off. It runs first, 0.15 s after
+  DisplayManager starts.
+- **The SD kill switch unloads:** a card with `mst2-cluster-nav-disable` now takes the libraries
+  out of `cpu.conf` (also when it is put in during the first two minutes after power-on), not
+  only switches the mod off; Install puts them back.
+- **Firmware check:** Install compares the 11 firmware files the hooks touch with
+  MST2_EU_SK_ZR_P0480T and refuses any other build, and a `cpu.conf` another tool has edited,
+  before anything is changed.
+- **Libraries do nothing where they do not belong:** in child processes, which inherit the
+  start-up list's preload, every hook is a silent pass-through; nothing runs at load time; SAL's
+  worker starts only with the mod on; DisplayManager does not look at the cluster frames while
+  the mod is off.
+- **Save diagnostics** also records every thread's state (`pidin`, shows a hung service), the
+  preload lines of `cpu.conf`, the boot-loop counters, the firmware check and the HMI start
+  script's class path with its backups (shows the toolbox dual navigation patch).
+
+### Diagnostics
+- **Android Auto log:** SAL's own connectivity log (Android Auto's receiver, AOA, the phone
+  code), which the unit prints only as errors to its console, is copied into the mod's log from
+  info level up, with each step of the mod's Android Auto session (cluster screen offered,
+  channel open, setup, focus, first frame).
+- **The log survives a reset:** while the mod runs, its log is also kept on the unit
+  (`/tsd/var/mst2-cluster-nav/log`, the boot before as `log.old`), and Save diagnostics
+  includes both: after a freeze, reboot and save.
+
 ### Fixed
+- **Android Auto restarted the whole unit** the moment a phone connected while the mod ran
+  (1.1.0): the cluster video endpoint the mod builds for Android Auto's receiver library sat on
+  an odd address, the mutex inside it made the QNX kernel take an alignment fault, and the
+  kernel shut the unit down. Its objects are now aligned. Found on mQbEMU with a full Android
+  Auto session (laboratory phone); the session now runs with navigation, now playing and the
+  cluster screen offered.
 - **Install from the source code** ("Code → Download ZIP" instead of the release's
   `mst2-cluster-nav-<version>.zip`) stopped with only "MANIFEST is missing". It now lists what the
   folder holds and says to download the package under the release's Assets; a card with a
@@ -72,7 +111,45 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
 
 ## Не выпущено
 
+**1.1.0 отозван:** сразу после Install один блок ушёл в цикл перезагрузок, не доходя до меню,
+хотя мод после пробного старта уже был выключен; файл-выключатель на SD не помог, блок пришлось
+перепрошивать. Причина не найдена (логи не сохранились; тот же пакет нормально грузится на mQbEMU
+и в другой машине). Этот выпуск делает так, чтобы такой цикл не мог продолжаться.
+
+### Безопасность
+- **Защита от цикла перезагрузок:** пока библиотеки мода в списке запуска, считается каждая
+  загрузка; четыре загрузки подряд, не проработавшие двух минут, сами убирают библиотеки из
+  `cpu.conf` — включён мод или нет. Работает первой, через 0,15 с после старта DisplayManager.
+- **Выключатель на SD выгружает мод:** карта с `mst2-cluster-nav-disable` теперь убирает
+  библиотеки из `cpu.conf` (и если её вставить в первые две минуты после включения), а не
+  только выключает мод; Install возвращает их.
+- **Проверка прошивки:** Install сверяет 11 файлов прошивки, которые трогают хуки, с
+  MST2_EU_SK_ZR_P0480T и отказывается от любой другой сборки и от `cpu.conf`, изменённого другим
+  инструментом, ничего не тронув.
+- **Библиотеки ничего не делают там, где им не место:** в дочерних процессах (они наследуют
+  preload из списка запуска) каждый хук молча пропускает вызов; при загрузке ничего не
+  запускается; рабочий поток SAL стартует только при включённом моде; DisplayManager не смотрит
+  кадры приборки, пока мод выключен.
+- **Save diagnostics** записывает ещё состояние каждого потока (`pidin`, видно зависшую службу),
+  строки preload из `cpu.conf`, счётчики циклической перезагрузки, проверку прошивки и путь
+  классов скрипта запуска HMI с его копиями (видно патч dual navigation тулбокса).
+
+### Диагностика
+- **Журнал Android Auto:** собственный журнал связи SAL (приёмник Android Auto, AOA, код
+  телефона), который блок выводит только ошибками в консоль, копируется в журнал мода с уровня
+  info, вместе с каждым шагом сеанса Android Auto мода (экран приборки предложен, канал открыт,
+  setup, фокус, первый кадр).
+- **Журнал переживает перезагрузку:** пока мод работает, журнал хранится и на блоке
+  (`/tsd/var/mst2-cluster-nav/log`, предыдущая загрузка — `log.old`), Save diagnostics кладёт
+  оба: после зависания перезагрузить и сохранить.
+
 ### Исправлено
+- **Android Auto перезапускал весь блок** в момент подключения телефона при работающем моде
+  (1.1.0): объект видеоприёмника приборки, который мод собирает для библиотеки Android Auto,
+  лежал по нечётному адресу, мьютекс в нём вызывал ошибку выравнивания в ядре QNX, и ядро
+  останавливало блок. Объекты теперь выровнены. Найдено на mQbEMU в полном сеансе Android Auto
+  (лабораторный телефон); сеанс теперь идёт, с навигацией, «сейчас играет» и предложенным
+  экраном приборки.
 - **Install из исходников** («Code → Download ZIP» вместо `mst2-cluster-nav-<версия>.zip` из
   релиза) останавливался только с «MANIFEST is missing». Теперь он перечисляет, что лежит в
   папке, и говорит скачать пакет в разделе Assets релиза; карта с полным пакетом важнее карты с
