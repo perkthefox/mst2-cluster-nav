@@ -43,6 +43,12 @@ boots normally on mQbEMU and in another car). This release makes sure no such lo
   includes both: after a freeze, reboot and save.
 
 ### Fixed
+- **Install could reset the unit** when the card's `custom/mst2-cluster-nav` had no
+  `preload.list`: the unit's awk (GNU Awk 3.1.5) crashes on a file it cannot open, and the unit
+  resets on any crashed process. Every awk on the unit now reads standard input. Found on mQbEMU
+  from the crash dump the unit wrote.
+- **The `cpu.conf` line-end check never ran on the unit:** it made its carriage return with
+  `printf`, which the unit does not have. It now uses the shell's own `print`.
 - **Android Auto restarted the whole unit** the moment a phone connected while the mod ran
   (1.1.0): the cluster video endpoint the mod builds for Android Auto's receiver library sat on
   an odd address, the mutex inside it made the QNX kernel take an alignment fault, and the
@@ -154,6 +160,12 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
   оба: после зависания перезагрузить и сохранить.
 
 ### Исправлено
+- **Install мог перезагрузить блок**, если в `custom/mst2-cluster-nav` на карте нет
+  `preload.list`: awk блока (GNU Awk 3.1.5) падает на файле, который не может открыть, а блок
+  перезагружается при падении любого процесса. Теперь каждый awk на блоке читает стандартный ввод.
+  Найдено на mQbEMU по дампу, который записал блок.
+- **Проверка концов строк `cpu.conf` на блоке не работала:** символ CR она делала через `printf`,
+  которого на блоке нет. Теперь — встроенным в оболочку `print`.
 - **Android Auto перезапускал весь блок** в момент подключения телефона при работающем моде
   (1.1.0): объект видеоприёмника приборки, который мод собирает для библиотеки Android Auto,
   лежал по нечётному адресу, мьютекс в нём вызывал ошибку выравнивания в ядре QNX, и ядро

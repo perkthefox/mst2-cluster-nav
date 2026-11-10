@@ -51,7 +51,7 @@ echo "Stock files backed up to $CARD/mst2-cluster-nav-backup/ (keep this copy)."
 
 # All files are copied under a new name and compared first; only then do they all take their
 # names, so a failed copy leaves the previous version complete.
-LIBS=$(awk '!/^#/ && NF == 2 { print $2 }' $SRC/preload.list)
+LIBS=$(awk '!/^#/ && NF == 2 { print $2 }' < $SRC/preload.list)
 mcn_mount_rw
 mkdir -p $LIBDIR
 ok=1

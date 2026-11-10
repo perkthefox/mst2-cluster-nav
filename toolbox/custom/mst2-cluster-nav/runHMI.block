@@ -81,7 +81,9 @@ if [ ! -e /dev/shmem/mst2-cluster-nav-booted ] && mcn_preloaded; then
   fi
   echo "$MCN_NOW" > $MCN/boot-up
 fi
-if [ -s $MCN_H ] && [ $(/usr/bin/awk 'END { print NR }' $MCN_H) -gt 60 ]; then
+# awk reads stdin only: the unit's GNU Awk 3.1.5 crashes on a file it cannot open, and a crashed
+# process resets the unit (mcn_common.sh).
+if [ -s $MCN_H ] && [ $(/usr/bin/awk 'END { print NR }' < $MCN_H) -gt 60 ]; then
   /bin/mv -f $MCN_H $MCN_H.old
 fi
 # SD card kill switch: a card in the slot at power-on is mounted by now (mQbEMU); the watcher

@@ -15,6 +15,10 @@ BUNDLE_ID=58
 MCN_TMP=/dev/shmem
 # HMI builds this mod was verified on; datapool ids differ between builds.
 HMI_VERSIONS="H29.319.120"
+# The unit's awk is GNU Awk 3.1.5: given a file it cannot open, it frees a buffer that is not on
+# the heap, takes SIGSEGV and aborts, and the unit's mcproot resets the whole unit on any crashed
+# process (mQbEMU: "Process crash detected: usr/bin/awk", "About to reset"). awk therefore only
+# ever reads stdin here: "awk '...' < file" lets the shell report a missing file instead.
 
 # The toolbox card that holds custom/mst2-cluster-nav. A card with the package's MANIFEST comes
 # first: the other slot may hold an older copy, or the repository's source tree (no MANIFEST).
@@ -61,7 +65,7 @@ mcn_check_unit() {
     echo "build of MIB2 Standard (e.g. Amundsen); radio units (Bolero) are not supported."
     return 1
   fi
-  for svc in $(awk '!/^#/ && NF == 2 && $1 !~ /:/ { print $1 }' "$1"); do
+  for svc in $(awk '!/^#/ && NF == 2 && $1 !~ /:/ { print $1 }' < "$1"); do
     if ! grep -q "^service $svc\$" $CPU_CONF; then
       echo "Aborted: $CPU_CONF has no service $svc; this unit is not supported."
       return 1
@@ -70,7 +74,8 @@ mcn_check_unit() {
   # Our entry is appended to a service's LD_PRELOAD line as it stands: a carriage return or a
   # blank at its end (another tool's edit) would join it to the stock library before it, and
   # the service would not start. Stock has every such line as "   envar LD_PRELOAD <list>".
-  if grep -q "$(printf '\r')" $CPU_CONF ||
+  # The unit has no printf (mQbEMU: "printf: cannot execute"); ksh's own print makes the CR.
+  if grep -q "$(print -n '\r')" $CPU_CONF ||
       grep 'LD_PRELOAD' $CPU_CONF | grep -v '^   envar LD_PRELOAD [^ 	]*$' > /dev/null; then
     echo "Aborted: $CPU_CONF is not as the firmware has it (line ends or LD_PRELOAD lines were"
     echo "edited by another tool); nothing was changed."
@@ -132,7 +137,7 @@ mcn_preload_conf() {
     /^service / { flush(); svc = $2; done = 0; print; next }
     (svc in lib) && $1 == "envar" && $2 == "LD_PRELOAD" && !done { print $0 ":" lib[svc]; done = 1; next }
     { print }
-    END { flush() }' ${2:-$CPU_CONF}
+    END { flush() }' < ${2:-$CPU_CONF}
 }
 
 # Remove our libraries from every LD_PRELOAD in cpu.conf ($1, default $CPU_CONF; any earlier
@@ -185,7 +190,7 @@ mcn_verify_card() {
       bad=1
     fi
   done < "$1/MANIFEST"
-  for lib in $(awk '!/^#/ && NF == 2 { print $2 }' "$1/preload.list"); do
+  for lib in $(awk '!/^#/ && NF == 2 { print $2 }' < "$1/preload.list"); do
     if ! grep -q "^$lib " "$1/MANIFEST"; then
       echo "$lib is not in MANIFEST."
       bad=1

@@ -111,7 +111,7 @@ done
 if [ -s $MCN/history ]; then
   echo "recent events (seconds since 1970):"
   awk '{ l[NR] = $0 } END { for (i = NR > 4 ? NR - 4 : 1; i <= NR; i++) print "  " l[i] }' \
-    $MCN/history
+    < $MCN/history
 fi
 echo "permanent: $([ -e $MCN/enabled ] && echo yes || echo no);" \
   "trial armed: $([ -e $MCN/trial ] && echo yes || echo no);" \

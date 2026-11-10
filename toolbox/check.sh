@@ -187,6 +187,13 @@ guard "$T/mod.sh" 'KILL_LATER=$W/media/mp000; MOUNT_OK=y' n \
     "kill switch on $T/w/media/mp000: removed from cpu.conf" 'kill-switch card mounted later'
 [ "$(cat "$W/cpu.conf")" = "$STRIPPED" ] || bad "guard FAILED: late kill switch left cpu.conf"
 
+# The unit's awk (GNU Awk 3.1.5) crashes on an input file it cannot open, and the unit resets on
+# any crashed process: every awk program on the unit reads stdin ("}' < file", a pipe, $(...)).
+for s in "$SCRIPTS"/*.sh "$BLOCK"; do
+    operand=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$s" | grep -n "}' *[^ <)|]" || true)
+    [ -z "$operand" ] || bad "awk FAILED: ${s##*/} gives awk a file: $operand"
+done
+
 # The installer's conflict check (mcn_navignore_lines): only active lines outside our block, and
 # only with the jar present.
 # install <runHMI.sh> <jar present y|n> <expect conflict y|n> <name>

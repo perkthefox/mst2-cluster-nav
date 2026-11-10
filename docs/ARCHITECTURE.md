@@ -65,6 +65,11 @@ that still run while the libraries are loaded do nothing at all unless the mod i
   and Install stops, changing nothing, if any differs. It also refuses a `cpu.conf` whose
   `LD_PRELOAD` lines are not as the firmware writes them (a carriage return or a trailing blank
   would join our entry to the stock library before it).
+- **The unit's own tools.** A crashed process resets the whole unit (`mcproot`: "Process crash
+  detected", "About to reset"), and the unit's awk is GNU Awk 3.1.5, which crashes on an input
+  file it cannot open (`iop_alloc` frees the caller's buffer: SIGSEGV, `catchsig`, `abort`;
+  mQbEMU, crash dump `awk.core`). So awk never gets a file name on the unit, only standard input
+  (`toolbox/check.sh` refuses a script that gives it one). There is no `printf` either.
 - **Dual navigation's copy of `runHMI.sh`.** The toolbox's dual navigation patch copies
   `runHMI.sh` to `runHMI.sh.bak` on its first Enable (only when there is none, and never removes
   it) and copies it back on Disable. A copy made before Install would bring back a `runHMI.sh`
