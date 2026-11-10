@@ -31,6 +31,8 @@ void *mcn_hook_enter(struct mcn_hook *hook);
 extern void (*mcn_first_call)(void);
 void mcn_log(const char *msg);
 void mcn_log2(const char *a, const char *b);
+/* A line of the unit's own log (sal/connlog.c) into the mod's log files, not to stdout. */
+void mcn_capture(const char *a, const char *b);
 /* One "key=value" datagram to the HMI bundle (PhoneLink, UDP 127.0.0.1:MCN_LINK_PORT). */
 void mcn_link_send(const char *text);
 #define MCN_LINK_PORT 39750
@@ -39,6 +41,14 @@ void mcn_link_send(const char *text);
 /* The mod's log in RAM (all its parts append), saved to the SD card from the GEM. */
 #define MCN_LOG_FILE "/dev/shmem/mst2-cluster-nav.log"
 #define MCN_LOG_MAX 262144
+/*
+ * The same lines on the unit's storage while the mod runs, so that a session which ends in a
+ * reset can still be read: the first line of a boot that writes any moves the last such boot's
+ * file to MCN_PLOG ".old" (MCN_PLOG_MARK tells the parts that it is done).
+ */
+#define MCN_PLOG MCN_DIR "/log"
+#define MCN_PLOG_MAX 131072
+#define MCN_PLOG_MARK "/dev/shmem/mst2-cluster-nav-log-moved"
 /* The part writing to the log: "sal" or "dm", defined by each library. */
 extern const char mcn_component[];
 /* Made by runHMI.sh when the mod loads on this boot (RAM: gone after the next reset). */

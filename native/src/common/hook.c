@@ -11,20 +11,61 @@
 
 static int own_process(void);
 
-/* Also kept in RAM for the GEM "Save diagnostics" (MCN_LOG_FILE), up to MCN_LOG_MAX bytes. */
-static void log_line(const char *a, const char *b)
-{
-    char line[256];
-    int n, fd;
+static int mcn_on; /* the last mcn_active verdict: the log goes to storage too */
 
-    if (!own_process()) {
-        return; /* a child's stdout may be a pipe its parent parses */
+/* One finished line into the log files: RAM always (MCN_LOG_MAX), storage while the mod is on. */
+static void put_line(const char *line, int n)
+{
+    int fd = open(MCN_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
+
+    if (fd >= 0) {
+        if (lseek(fd, 0, SEEK_END) < MCN_LOG_MAX) {
+            write(fd, line, (size_t)n);
+        }
+        close(fd);
     }
-    write(1, "[mst2-cluster-nav] ", 19);
-    write(1, a, strlen(a));
-    write(1, b, strlen(b));
-    write(1, "\n", 1);
-    n = snprintf(line, sizeof(line), "%u %s: %s%s\n", mcn_now_ms(), mcn_component, a, b);
+    if (!mcn_on) {
+        return;
+    }
+    fd = open(MCN_PLOG_MARK, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd >= 0) {
+        /* First on this boot: the boot so far, this line included, from the RAM log. */
+        char buf[512];
+        int in, out, got, total = 0;
+
+        close(fd);
+        rename(MCN_PLOG, MCN_PLOG ".old");
+        in = open(MCN_LOG_FILE, O_RDONLY);
+        out = open(MCN_PLOG, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        while (in >= 0 && out >= 0 && total < MCN_PLOG_MAX &&
+               (got = (int)read(in, buf, sizeof(buf))) > 0) {
+            write(out, buf, (size_t)got);
+            total += got;
+        }
+        if (in >= 0) {
+            close(in);
+        }
+        if (out >= 0) {
+            close(out);
+        }
+        if (in >= 0) {
+            return;
+        }
+    }
+    fd = open(MCN_PLOG, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        if (lseek(fd, 0, SEEK_END) < MCN_PLOG_MAX) {
+            write(fd, line, (size_t)n);
+        }
+        close(fd);
+    }
+}
+
+static void put(const char *a, const char *b)
+{
+    char line[320];
+    int n = snprintf(line, sizeof(line), "%u %s: %s%s\n", mcn_now_ms(), mcn_component, a, b);
+
     if (n <= 0) {
         return;
     }
@@ -32,12 +73,25 @@ static void log_line(const char *a, const char *b)
         n = sizeof(line) - 1;
         line[n - 1] = '\n';
     }
-    fd = open(MCN_LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd >= 0) {
-        if (lseek(fd, 0, SEEK_END) < MCN_LOG_MAX) {
-            write(fd, line, (size_t)n);
-        }
-        close(fd);
+    put_line(line, n);
+}
+
+static void log_line(const char *a, const char *b)
+{
+    if (!own_process()) {
+        return; /* a child's stdout may be a pipe its parent parses */
+    }
+    write(1, "[mst2-cluster-nav] ", 19);
+    write(1, a, strlen(a));
+    write(1, b, strlen(b));
+    write(1, "\n", 1);
+    put(a, b);
+}
+
+void mcn_capture(const char *a, const char *b)
+{
+    if (own_process()) {
+        put(a, b);
     }
 }
 
@@ -369,6 +423,7 @@ int mcn_active(void)
         /* The kill switch and the guard first: neither may use up the trial. */
         active = active && !exists(MCN_OFF_MARK) &&
                  (exists(MCN_DIR "/enabled") || exists(MCN_BOOT_MARK) || trial_boot());
+        mcn_on = active;
         if (active != said) {
             said = active;
             mcn_log(active ? "active" : "off: disabled or SD card kill switch, stock behaviour");

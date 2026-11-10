@@ -68,7 +68,8 @@ case "$1" in
         "cat /dev/shmem/mst2-cluster-nav-iap2.cfg" \
         "ls -l /dev/shmem/mst2-cluster-nav-rg-ready" \
         "ls -l $MCN $LIBDIR" "date -t" "grep LD_PRELOAD $CPU_CONF" \
-        "ls -l $HMI_SH* /tsd/hmi/HMI/jar" "grep -n BOOTCLASSPATH $HMI_SH" "pidin"; do
+        "ls -l $HMI_SH* /tsd/hmi/HMI/jar" "grep -n BOOTCLASSPATH $HMI_SH" "pidin" \
+        "cat $MCN/log.old" "cat $MCN/log"; do
         echo "### $c"
         $c 2>&1
       done

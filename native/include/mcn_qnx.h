@@ -34,6 +34,7 @@ typedef int pthread_t;
 #define O_APPEND 0x0008
 #define O_CREAT 0x0100
 #define O_TRUNC 0x0200
+#define O_EXCL 0x0400
 
 /* <sys/mman.h> values as the unit's showmem prints them (mQbEMU research notes). */
 #define PROT_READ 0x0100
@@ -95,6 +96,7 @@ void *malloc(size_t n);
 void free(void *p);
 void abort(void);
 int snprintf(char *buf, size_t n, const char *fmt, ...);
+int vsnprintf(char *buf, size_t n, const char *fmt, __builtin_va_list ap);
 int usleep(unsigned usec);
 int clock_gettime(int clock, struct timespec *ts);
 int pthread_create(pthread_t *thread, const void *attr, void *(*fn)(void *), void *arg);

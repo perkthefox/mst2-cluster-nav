@@ -228,6 +228,12 @@ int main(void)
     CHECK(!boot(MCN_DIR "/enabled", MCN_OFF_MARK)); /* runHMI.sh's guard kept the mod out */
     CHECK(!boot(MCN_DIR "/trial", MCN_OFF_MARK) && find(MCN_DIR "/trial") >= 0);
     CHECK(!boot(NULL, NULL));
+    /* The log reaches the unit's storage only while the mod is on. */
+    mcn_log("off line");
+    CHECK(find(MCN_PLOG) < 0);
+    CHECK(boot(MCN_DIR "/enabled", NULL));
+    mcn_log("on line");
+    CHECK(find(MCN_PLOG) >= 0);
 
     /* Busy pairs nest: the mark goes on the first start and off with the last end only. */
     snprintf(busy, sizeof(busy), "%s/busy-%s", MCN_DIR, mcn_component);
@@ -268,7 +274,8 @@ int main(void)
     CHECK(value(strikes) == 3 && value(off) == 1 && !mcn_active());
     CHECK(find(MCN_DIR "/history") >= 0); /* and the reason survives the reset */
     puts("hook: silent pass-through in other processes, runHMI.sh block, kill switch, guard, "
-         "enabled, trial taken once and never on its arming boot, nesting busy mark, crash "
+         "enabled, trial taken once and never on its arming boot, log on storage only while on, "
+         "nesting busy mark, crash "
          "strikes: ok");
     return 0;
 }

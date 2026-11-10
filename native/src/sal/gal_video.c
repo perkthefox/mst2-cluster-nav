@@ -144,6 +144,7 @@ static int want_focus;      /* setup or a focus request asks for (more) video fo
 static int started;         /* transcoder started for this channel opening */
 static int lost;            /* the transcoder gave up: the cluster goes back to stock */
 static uint8_t config[CONFIG_MAX];
+static int said_data, said_config; /* logged once per channel opening */
 static unsigned config_len;
 static struct au {
     uint8_t *data;
@@ -187,6 +188,15 @@ static uint32_t rd32(const uint8_t *o, unsigned off)
 
     memcpy(&v, o + off, 4);
     return v;
+}
+
+/* "<what> <a> <b>" into the mod's log: a session's steps for car logs. */
+static void say(const char *what, int a, int b)
+{
+    char line[96];
+
+    snprintf(line, sizeof(line), "%s %d %d", what, a, b);
+    mcn_log(line);
 }
 
 static void none(void)
@@ -299,6 +309,10 @@ static void on_data(void *cb, int session, uint64_t ts, void *sp, const uint8_t 
     if (!queued) {
         ack_frames(vobj, session, 1); /* no sink mutex in ackFrames (0x8b0a8) */
     }
+    if (!said_data) {
+        said_data = 1;
+        say("aa video: first frame, bytes", (int)len, queued);
+    }
 }
 
 /* SPS/PPS, once per stream: kept for the IDRs (never fed alone: the transcoder would drop it). */
@@ -320,15 +334,19 @@ static void on_codec_config(void *cb, const uint8_t *d, unsigned len)
     if (bad) {
         mcn_log("aa video: codec configuration not Annex-B or too long, waiting for SPS in-band");
     }
+    if (!said_config) {
+        said_config = 1;
+        say("aa video: codec configuration, bytes", (int)len, !bad);
+    }
 }
 
 static void on_setup(void *cb, int codec)
 {
     (void)cb;
-    (void)codec;
     vlock();
     want_focus = 1; /* focus must be asked from our thread, not here (sink mutex held) */
     vunlock();
+    say("aa video: setup, codec", codec, 0);
 }
 
 static int on_media_config(void *cb, int index)
@@ -341,11 +359,10 @@ static int on_media_config(void *cb, int index)
 static void on_focus_request(void *cb, int mode, int reason)
 {
     (void)cb;
-    (void)mode;
-    (void)reason;
     vlock();
     want_focus = 1;
     vunlock();
+    say("aa video: focus request, mode", mode, reason);
 }
 
 /* Input stub: answer a KeyBindingRequest (0x8002) with an empty response (0x8003), like the
@@ -459,6 +476,7 @@ static void close_stream(int end)
     last_data_ms = 0;
     want_focus = started = lost = 0;
     config_len = 0;
+    said_data = said_config = 0;
     q_count = feeding ? 1 : 0; /* the feeder pops the unit it holds */
     q_need_idr = 0;
     release = busy_held;
@@ -645,6 +663,18 @@ void mcn_gal_video_offer(void *router, void *response)
     }
     /* resp+4 is the response's unknown-field std::string; append our Service bytes. */
     str_append((uint8_t *)response + 4, (const char *)out, (unsigned)n);
+    {
+        static const char hex[] = "0123456789abcdef";
+        char line[40 + 2 * sizeof(out)];
+        int i, k = snprintf(line, sizeof(line), "aa video: appended %d %d ", vid, iid);
+
+        for (i = 0; i < n && k + 2 < (int)sizeof(line); i++) {
+            line[k++] = hex[out[i] >> 4];
+            line[k++] = hex[out[i] & 15];
+        }
+        line[k] = 0;
+        mcn_log(line);
+    }
     vlock();
     active = 1;
     vunlock();

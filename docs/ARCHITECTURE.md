@@ -133,7 +133,12 @@ that still run while the libraries are loaded do nothing at all unless the mod i
 
 All parts append to one log in RAM, `/dev/shmem/mst2-cluster-nav.log` (256 KiB at most), which
 GEM "Save diagnostics" copies to the card with the iAP2 driver's own log
-(`/dev/shmem/iap2_carplay.log`) and the generated `iap2.cfg`.
+(`/dev/shmem/iap2_carplay.log`) and the generated `iap2.cfg`. While the mod runs, the same lines
+also go to `/tsd/var/mst2-cluster-nav/log` (128 KiB per boot): the first line of a boot that
+writes there moves the previous file to `log.old` and starts the new one with the boot's RAM log
+so far, so a session that ended in a reset can still be read after the next boot. SAL's connectivity log (`ConnCommonLogger`: Android Auto's receiver, AOA, SAL's
+phone code) is copied in from info level up (`native/src/sal/connlog.c`); the unit itself prints
+only errors, and only to its console.
 
 ## Components
 
