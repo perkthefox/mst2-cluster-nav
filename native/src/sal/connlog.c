@@ -22,6 +22,9 @@
  *
  * The real functions are found with dlsym, not mcn_hook_enter: logging starts during SAL's
  * static construction, before the worker may be started, and a failed lookup only loses lines.
+ * Nothing is formatted beyond what the unit itself formats, and nothing is copied, unless the mod
+ * is on: mcn_active, cached for 2 s, asked here too, so that a running mod has the connection from
+ * SAL's start (the first log line also starts SAL's crash guard, at once, not at the first hook).
  */
 #include "sal.h"
 
@@ -68,7 +71,7 @@ static void capture(int level, const char *prefix, const char *text)
 {
     char head[64];
 
-    if (level < INFO || level > 6) {
+    if (level < INFO || level > 6 || !mcn_active()) {
         return;
     }
     snprintf(head, sizeof(head), "unit L%d %s%s", level, prefix, *prefix ? ": " : "");
@@ -115,7 +118,9 @@ MCN_EXPORT void _ZN3tsd12connectivity6common7logging16ConnCommonLogger7log_fmtEN
         f(self, level, prefix, "%s", text);
         return;
     }
-    if (level < INFO || !fmt) {
+    /* A level the unit does not log is formatted only for a running mod: stock never formats
+     * it, and its arguments were never exercised there. */
+    if (level < INFO || !fmt || !mcn_active()) {
         return;
     }
     __builtin_va_start(ap, fmt);

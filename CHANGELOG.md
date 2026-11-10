@@ -36,11 +36,13 @@ boots normally on mQbEMU and in another car). This release makes sure no such lo
 ### Diagnostics
 - **Android Auto log:** SAL's own connectivity log (Android Auto's receiver, AOA, the phone
   code), which the unit prints only as errors to its console, is copied into the mod's log from
-  info level up, with each step of the mod's Android Auto session (cluster screen offered,
-  channel open, setup, focus, first frame).
+  info level up while the mod is on (off, the unit's logging stays exactly stock), with each
+  step of the mod's Android Auto session (cluster screen offered, channel open, setup, focus,
+  first frame).
 - **The log survives a reset:** while the mod runs, its log is also kept on the unit
-  (`/tsd/var/mst2-cluster-nav/log`, the boot before as `log.old`), and Save diagnostics
-  includes both: after a freeze, reboot and save.
+  (`/tsd/var/mst2-cluster-nav/log` and `log.1`, the newest 128-256 KiB of the boot; the boot
+  before as `log.old` and `log.old.1`), and Save diagnostics includes them: after a freeze,
+  reboot and save.
 
 ### Fixed
 - **Boot-loop breaker, after review:** each boot's count is synced to disk at once (a kernel
@@ -158,11 +160,13 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
 ### Диагностика
 - **Журнал Android Auto:** собственный журнал связи SAL (приёмник Android Auto, AOA, код
   телефона), который блок выводит только ошибками в консоль, копируется в журнал мода с уровня
-  info, вместе с каждым шагом сеанса Android Auto мода (экран приборки предложен, канал открыт,
-  setup, фокус, первый кадр).
+  info, пока мод включён (выключенный мод оставляет журнал блока полностью штатным), вместе с
+  каждым шагом сеанса Android Auto мода (экран приборки предложен, канал открыт, setup, фокус,
+  первый кадр).
 - **Журнал переживает перезагрузку:** пока мод работает, журнал хранится и на блоке
-  (`/tsd/var/mst2-cluster-nav/log`, предыдущая загрузка — `log.old`), Save diagnostics кладёт
-  оба: после зависания перезагрузить и сохранить.
+  (`/tsd/var/mst2-cluster-nav/log` и `log.1` — последние 128–256 КиБ загрузки; предыдущая
+  загрузка — `log.old` и `log.old.1`), Save diagnostics кладёт их: после зависания перезагрузить
+  и сохранить.
 
 ### Исправлено
 - **Защита от цикла перезагрузок, после ревью:** счётчик каждой загрузки сразу пишется на

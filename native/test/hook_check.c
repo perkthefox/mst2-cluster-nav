@@ -90,6 +90,9 @@ int mcn_test_open(const char *path, int flags, ...)
     if (!strcmp(path, MCN_LOG_FILE)) {
         return -1;
     }
+    if ((flags & O_EXCL) && i >= 0) {
+        return -1;
+    }
     if (flags & O_CREAT) {
         if (i < 0 || (flags & O_TRUNC)) {
             i = put(path, "");
@@ -144,6 +147,27 @@ int mcn_test_unlink(const char *path)
         fs[i].used = 0;
     }
     return i >= 0 ? 0 : -1;
+}
+
+off_t mcn_test_lseek(int fd, off_t off, int whence)
+{
+    int i = fd - 20;
+
+    CHECK(i >= 0 && i < NFILES && fs[i].used && off == 0 && whence == SEEK_END);
+    return fs[i].len;
+}
+
+int mcn_test_rename(const char *from, const char *to)
+{
+    int i = find(from);
+
+    if (i < 0) {
+        return -1;
+    }
+    mcn_test_unlink(to);
+    CHECK(strlen(to) < sizeof(fs[i].path));
+    memcpy(fs[i].path, to, strlen(to) + 1);
+    return 0;
 }
 
 int mcn_test_clock_gettime(int clock, struct timespec *ts)
@@ -234,6 +258,20 @@ int main(void)
     CHECK(boot(MCN_DIR "/enabled", NULL));
     mcn_log("on line");
     CHECK(find(MCN_PLOG) >= 0);
+    /* A full log moves to ".1" and the newest lines go on; the next boot keeps both as ".old". */
+    for (int k = 0; k < 12; k++) {
+        mcn_log("a line long enough to fill the test log quickly");
+    }
+    CHECK(find(MCN_PLOG ".1") >= 0 && fs[find(MCN_PLOG)].len < 200 + 80);
+    CHECK(fs[find(MCN_PLOG ".1")].len >= 200);
+    {
+        int i = find(MCN_PLOG_MARK);
+
+        CHECK(i >= 0);
+        fs[i].used = 0; /* the next boot (RAM marks gone) */
+    }
+    mcn_log("next boot");
+    CHECK(find(MCN_PLOG ".old") >= 0 && find(MCN_PLOG ".old.1") >= 0 && find(MCN_PLOG ".1") < 0);
 
     /* Busy pairs nest: the mark goes on the first start and off with the last end only. */
     snprintf(busy, sizeof(busy), "%s/busy-%s", MCN_DIR, mcn_component);

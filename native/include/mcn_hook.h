@@ -43,11 +43,14 @@ void mcn_link_send(const char *text);
 #define MCN_LOG_MAX 262144
 /*
  * The same lines on the unit's storage while the mod runs, so that a session which ends in a
- * reset can still be read: the first line of a boot that writes any moves the last such boot's
- * file to MCN_PLOG ".old" (MCN_PLOG_MARK tells the parts that it is done).
+ * reset can still be read. A full MCN_PLOG becomes MCN_PLOG ".1" and a new one starts, so the
+ * newest 1-2 x MCN_PLOG_MAX of a boot are kept; the first line of a boot that writes any moves
+ * the last such boot's two to ".old" and ".old.1" (MCN_PLOG_MARK tells the parts that it is done).
  */
 #define MCN_PLOG MCN_DIR "/log"
+#ifndef MCN_PLOG_MAX
 #define MCN_PLOG_MAX 131072
+#endif
 #define MCN_PLOG_MARK "/dev/shmem/mst2-cluster-nav-log-moved"
 /* The part writing to the log: "sal" or "dm", defined by each library. */
 extern const char mcn_component[];

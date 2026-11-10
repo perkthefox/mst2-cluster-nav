@@ -11,7 +11,7 @@
 
 static int own_process(void);
 
-static int mcn_on; /* the last mcn_active verdict: the log goes to storage too */
+static volatile int mcn_on; /* the last mcn_active verdict: the log goes to storage too */
 
 /* One finished line into the log files: RAM always (MCN_LOG_MAX), storage while the mod is on. */
 static void put_line(const char *line, int n)
@@ -34,6 +34,8 @@ static void put_line(const char *line, int n)
         int in, out, got, total = 0;
 
         close(fd);
+        unlink(MCN_PLOG ".old.1");
+        rename(MCN_PLOG ".1", MCN_PLOG ".old.1");
         rename(MCN_PLOG, MCN_PLOG ".old");
         in = open(MCN_LOG_FILE, O_RDONLY);
         out = open(MCN_PLOG, O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -53,13 +55,19 @@ static void put_line(const char *line, int n)
         }
     }
     fd = open(MCN_PLOG, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0 && lseek(fd, 0, SEEK_END) >= MCN_PLOG_MAX) {
+        /* Full: it becomes ".1" (the one before goes), the newest lines go on in a new file.
+         * ponytail: two parts rotating at once may lose one ".1"; a lock if that ever matters. */
+        close(fd);
+        rename(MCN_PLOG, MCN_PLOG ".1");
+        fd = open(MCN_PLOG, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    }
     if (fd >= 0) {
-        if (lseek(fd, 0, SEEK_END) < MCN_PLOG_MAX) {
-            write(fd, line, (size_t)n);
-        }
+        write(fd, line, (size_t)n);
         close(fd);
     }
 }
+
 
 static void put(const char *a, const char *b)
 {
@@ -376,14 +384,22 @@ int mcn_main_exports(const char *symbol)
     return main_image && dlsym(main_image, symbol);
 }
 
-/* What DT_INIT may not do (it runs in every child too): the load note and the crash guard. */
+/*
+ * What DT_INIT may not do (it runs in every child too): the load note and the crash guard. Any
+ * other thread arriving meanwhile waits for the guard's verdict (component_off).
+ */
 static void start_once(void)
 {
     static int started;
+    static volatile int ready;
 
     if (!__sync_lock_test_and_set(&started, 1)) {
         mcn_log2(mcn_component, " hooks loaded");
         mcn_guard_init();
+        ready = 1;
+    }
+    while (!ready) {
+        usleep(1000);
     }
 }
 

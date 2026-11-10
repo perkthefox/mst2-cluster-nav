@@ -38,9 +38,11 @@ clang "$OUT/ipod.o" "$OUT/ipod-check.o" "$OUT/route.o" -o "$OUT/ipod-check"
 clang -std=c99 -ffreestanding -fno-builtin -Wall -Wextra -Werror -I"$HERE/include" \
     -Dopen=mcn_test_open -Dclose=mcn_test_close -Dunlink=mcn_test_unlink \
     -Dread=mcn_test_read -Dwrite=mcn_test_write -Dclock_gettime=mcn_test_clock_gettime \
+    -Dlseek=mcn_test_lseek -Drename=mcn_test_rename -DMCN_PLOG_MAX=200 \
     -c "$HERE/src/common/hook.c" -o "$OUT/hook.o"
 clang -std=c99 -ffreestanding -fno-builtin -Wall -Wextra -Werror -I"$HERE/include" \
-    -Dclock_gettime=mcn_test_clock_gettime -c "$HERE/test/hook_check.c" -o "$OUT/hook-check.o"
+    -Dclock_gettime=mcn_test_clock_gettime -DMCN_PLOG_MAX=200 \
+    -c "$HERE/test/hook_check.c" -o "$OUT/hook-check.o"
 clang "$OUT/hook.o" "$OUT/hook-check.o" -o "$OUT/hook-check"
 "$OUT/hook-check"
 # avcC and Annex-B framing of the phone's stream (sal/avc.c), malformed records included.
