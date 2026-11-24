@@ -2,12 +2,15 @@
 
 **English** · [Русский](#русский)
 
-## Unreleased
+## 1.1.1
 
 **1.1.0 was withdrawn:** right after Install one head unit went into a reset loop that never
 reached the menu, with the mod already off after its trial boot; the SD kill switch did not stop
 it and the unit had to be reflashed. The cause was not found (no logs survived; the same package
 boots normally on mQbEMU and in another car). This release makes sure no such loop can last.
+
+Before release, the 1.1.1 test build (the same code) was tested in testers' cars, with CarPlay and
+Android Auto.
 
 ### Safety
 - **Boot-loop breaker:** while the mod's libraries are in the start-up list, every boot is
@@ -127,12 +130,15 @@ the unit's firmware; reports from cars are welcome (GEM → Save diagnostics).
 
 ## Русский
 
-## Не выпущено
+## 1.1.1
 
 **1.1.0 отозван:** сразу после Install один блок ушёл в цикл перезагрузок, не доходя до меню,
 хотя мод после пробного старта уже был выключен; файл-выключатель на SD не помог, блок пришлось
 перепрошивать. Причина не найдена (логи не сохранились; тот же пакет нормально грузится на mQbEMU
 и в другой машине). Этот выпуск делает так, чтобы такой цикл не мог продолжаться.
+
+Перед выпуском тестовая сборка 1.1.1 (тот же код) проверена тестерами в их машинах, с CarPlay и
+Android Auto.
 
 ### Безопасность
 - **Защита от цикла перезагрузок:** пока библиотеки мода в списке запуска, считается каждая
